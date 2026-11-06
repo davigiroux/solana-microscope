@@ -285,15 +285,13 @@ fn notification_settings(channel: &str) -> Option<Value> {
     (channel != "none").then(|| json!({ "receiver": format!("microscope-{channel}") }))
 }
 
-/// Whether activity alerts on this channel skip Grafana's "resolved" message.
 const fn activity_skips_resolve(channel: AlertChannel) -> bool {
     match channel {
         AlertChannel::Slack | AlertChannel::Telegram => true,
-        AlertChannel::Pagerduty => false, // pending dev-jodee's answer on #12
+        AlertChannel::Pagerduty => false,
     }
 }
 
-/// Contact point that a channel's activity or health alerts notify.
 fn receiver(channel: AlertChannel, activity: bool) -> String {
     if activity && activity_skips_resolve(channel) {
         format!("microscope-{channel}-activity")
