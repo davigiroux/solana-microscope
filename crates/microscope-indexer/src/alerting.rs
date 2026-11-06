@@ -1767,8 +1767,8 @@ mod tests {
         );
     }
 
-    /// PagerDuty closes an incident on the resolve event, so without one every
-    /// match would leave an incident open.
+    /// PagerDuty closes an incident only on the resolve event. Without one, the
+    /// incident stays open and later matches join it instead of opening a new one.
     #[test]
     fn keeps_pagerduty_activity_alerts_on_the_resolving_contact_point() {
         let channels = BTreeSet::from([AlertChannel::Pagerduty]);
