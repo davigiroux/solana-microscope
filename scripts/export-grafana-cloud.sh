@@ -74,12 +74,13 @@ document="$work_dir/alerting/microscope.json"
 dashboard="$work_dir/dashboards/overview.json"
 
 too_long="$(jq --raw-output --arg deployment "$DEPLOYMENT" '
-  .contactPoints[].name
-  | sub("^microscope-"; $deployment + "-")
+  ["microscope-" + $deployment]
+  + [.contactPoints[].name | sub("^microscope-"; $deployment + "-")]
+  | .[]
   | select(length > 40)
 ' "$document")"
 [[ -z "$too_long" ]] || {
-  echo "deployment name too long: Grafana rejects contact point UIDs over 40 characters:" >&2
+  echo "deployment name too long: Grafana rejects dashboard and contact point UIDs over 40 characters:" >&2
   sed 's/^/  /' <<<"$too_long" >&2
   exit 64
 }

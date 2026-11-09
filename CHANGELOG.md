@@ -20,9 +20,10 @@ version and the section heading below.
   tree, so those routes were never used. `<deployment>-routes.json` now holds
   only the route that mutes alerts without a channel, so Grafana Cloud users
   have nothing per channel to merge.
-- `scripts/export-grafana-cloud.sh` fails before writing anything when a
-  contact point UID would exceed Grafana's 40-character limit. With
-  `-telegram-activity`, deployment names longer than 22 characters hit it.
+- `scripts/export-grafana-cloud.sh` fails before writing anything when the
+  dashboard or a contact point UID would exceed Grafana's 40-character limit.
+  The dashboard UID alone caps deployment names at 29 characters; with
+  `-telegram-activity`, names longer than 22 characters hit it.
 
 ## [0.1.0] — 2026-09-14
 
