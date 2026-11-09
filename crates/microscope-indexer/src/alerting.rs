@@ -204,30 +204,6 @@ fn provisioning_document(
         }
     }
 
-    let mut routes = vec![json!({
-        "receiver": "microscope-noop",
-        "object_matchers": [["channel", "=", "none"]],
-        "mute_time_intervals": ["microscope-always"],
-        "continue": false,
-    })];
-    for channel in channels {
-        if activity_skips_resolve(*channel) {
-            routes.push(json!({
-                "receiver": receiver(*channel, true),
-                "object_matchers": [
-                    ["channel", "=", channel.as_str()],
-                    ["signal_kind", "!=", "datasource"],
-                ],
-                "continue": false,
-            }));
-        }
-        routes.push(json!({
-            "receiver": receiver(*channel, false),
-            "object_matchers": [["channel", "=", channel.as_str()]],
-            "continue": false,
-        }));
-    }
-
     Ok(json!({
         "apiVersion": 1,
         "groups": groups,
@@ -247,7 +223,12 @@ fn provisioning_document(
             "group_wait": "5s",
             "group_interval": "1m",
             "repeat_interval": "4h",
-            "routes": routes,
+            "routes": [{
+                "receiver": "microscope-noop",
+                "object_matchers": [["channel", "=", "none"]],
+                "mute_time_intervals": ["microscope-always"],
+                "continue": false,
+            }],
         }],
     }))
 }
@@ -277,9 +258,9 @@ fn health_channel_names(channels: &BTreeSet<AlertChannel>) -> Vec<&str> {
 }
 
 /// Grafana Cloud's notification-policy tree belongs to the whole org, so a
-/// deployment that shares a stack cannot add the channel routes this document
-/// declares. Naming the receiver on the rule reaches the same contact point
-/// through a route Grafana derives per rule. `channel = none` keeps routing
+/// deployment that shares a stack cannot add channel routes to it. Naming the
+/// receiver on the rule reaches the contact point through a route Grafana
+/// derives per rule and places ahead of the tree. `channel = none` keeps routing
 /// through the tree, where the always-on mute timing lives.
 fn notification_settings(channel: &str) -> Option<Value> {
     (channel != "none").then(|| json!({ "receiver": format!("microscope-{channel}") }))
@@ -1792,41 +1773,25 @@ mod tests {
         );
     }
 
-    /// Routes are tried in order and the first match stops the walk, so the
-    /// activity route has to come before the channel's catch-all.
+    /// Grafana places the route it derives from a rule's receiver ahead of the
+    /// tree and stops there, so only rules without a channel reach the tree.
     #[test]
-    fn routes_activity_alerts_ahead_of_the_channel_route_in_the_policy_tree() {
-        let channels = BTreeSet::from([AlertChannel::Telegram, AlertChannel::Pagerduty]);
+    fn keeps_only_the_muted_noop_route_in_the_policy_tree() {
+        let channels = BTreeSet::from([
+            AlertChannel::Slack,
+            AlertChannel::Telegram,
+            AlertChannel::Pagerduty,
+        ]);
         let document = provisioning_document(&config(vec![]), &channels, false).unwrap();
 
         assert_eq!(
             document["policies"][0]["routes"],
-            serde_json::json!([
-                {
-                    "receiver": "microscope-noop",
-                    "object_matchers": [["channel", "=", "none"]],
-                    "mute_time_intervals": ["microscope-always"],
-                    "continue": false,
-                },
-                {
-                    "receiver": "microscope-telegram-activity",
-                    "object_matchers": [
-                        ["channel", "=", "telegram"],
-                        ["signal_kind", "!=", "datasource"],
-                    ],
-                    "continue": false,
-                },
-                {
-                    "receiver": "microscope-telegram",
-                    "object_matchers": [["channel", "=", "telegram"]],
-                    "continue": false,
-                },
-                {
-                    "receiver": "microscope-pagerduty",
-                    "object_matchers": [["channel", "=", "pagerduty"]],
-                    "continue": false,
-                },
-            ])
+            serde_json::json!([{
+                "receiver": "microscope-noop",
+                "object_matchers": [["channel", "=", "none"]],
+                "mute_time_intervals": ["microscope-always"],
+                "continue": false,
+            }])
         );
     }
 

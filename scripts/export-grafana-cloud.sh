@@ -20,7 +20,9 @@ rewrites it for the shared Grafana Cloud stack into:
 Import dashboards through the Grafana UI; push alert rules, contact
 points, and mute timings through the Grafana provisioning API. Merge
 <deployment>-routes.json into the shared notification-policy tree by
-hand; it is not a standalone resource.
+hand; it is not a standalone resource. It holds only the route that
+mutes alerts without a channel: rules with one name their receiver, and
+Grafana routes those ahead of the tree.
 
 Every exported rule names <deployment>-<channel> as its receiver, or
 <deployment>-<channel>-activity for Slack and Telegram activity alerts,
@@ -70,6 +72,17 @@ cargo run --quiet -p microscope-indexer -- generate-alerting \
 
 document="$work_dir/alerting/microscope.json"
 dashboard="$work_dir/dashboards/overview.json"
+
+too_long="$(jq --raw-output --arg deployment "$DEPLOYMENT" '
+  .contactPoints[].name
+  | sub("^microscope-"; $deployment + "-")
+  | select(length > 40)
+' "$document")"
+[[ -z "$too_long" ]] || {
+  echo "deployment name too long: Grafana rejects contact point UIDs over 40 characters:" >&2
+  sed 's/^/  /' <<<"$too_long" >&2
+  exit 64
+}
 
 readonly CLOUD_REWRITE='
 def swap_datasources:
