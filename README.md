@@ -355,6 +355,13 @@ that case, once the interruptions are sustained: the datasource logs one timeout
 per `STREAM_TIMEOUT`, so the rule counts them over 15 minutes and fires above
 five, leaving the single reconnect the client replays silent.
 
+The probes listen on `0.0.0.0:9091` and the metrics exporter on `0.0.0.0:9090`.
+To bind either one elsewhere, for example to loopback on a host without Docker,
+set `MICROSCOPE_PROBE_ADDR` or `MICROSCOPE_METRICS_ADDR` to an IP address and
+port such as `127.0.0.1:9091`. A value that does not parse stops startup. Leave
+both unset under Compose and Kubernetes, where Prometheus and the kubelet reach
+the indexer from outside its container.
+
 ## Decoding and Squads
 
 Run `just generate` after changing the program or IDL. Carbon generates the

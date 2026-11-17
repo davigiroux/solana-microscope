@@ -1,14 +1,27 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    env,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use metrics_exporter_prometheus::PrometheusBuilder;
 
-const METRICS_PORT: u16 = 9090;
+const METRICS_ADDR_VAR: &str = "MICROSCOPE_METRICS_ADDR";
+const DEFAULT_METRICS_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 9090);
 
 pub fn install() {
+    let addr = bind_addr(
+        METRICS_ADDR_VAR,
+        env::var(METRICS_ADDR_VAR).ok().as_deref(),
+        DEFAULT_METRICS_ADDR,
+    )
+    .unwrap_or_else(|message| panic!("{message}"));
+
     // carbon-prometheus-metrics binds 127.0.0.1 only, which isn't reachable from other
-    // docker-compose containers, so the exporter is installed directly here on 0.0.0.0.
+    // docker-compose containers, so the exporter is installed directly here, on 0.0.0.0
+    // by default.
     PrometheusBuilder::new()
-        .with_http_listener(([0, 0, 0, 0], METRICS_PORT))
+        .with_http_listener(addr)
         .install()
         .expect("failed to install Prometheus exporter");
 
@@ -16,6 +29,20 @@ pub fn install() {
     // (and alertable) even before the first decoded event arrives.
     record_event();
     initialize_transactions();
+}
+
+/// Resolves a listener address from an env var value, or the default when unset or empty.
+pub fn bind_addr(
+    variable: &str,
+    configured: Option<&str>,
+    default: SocketAddr,
+) -> Result<SocketAddr, String> {
+    let Some(value) = configured.filter(|value| !value.is_empty()) else {
+        return Ok(default);
+    };
+    value
+        .parse()
+        .map_err(|_| format!("invalid {variable} value: {value:?}"))
 }
 
 /// Seeds the counters the transaction panels chart, so a deployment that has
@@ -209,7 +236,48 @@ pub fn unix_now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
     use metrics_util::debugging::{DebugValue, DebuggingRecorder};
+
+    use super::{bind_addr, DEFAULT_METRICS_ADDR, METRICS_ADDR_VAR};
+
+    #[test]
+    fn an_unset_or_empty_bind_address_falls_back_to_the_default() {
+        let all_interfaces = SocketAddr::from(([0, 0, 0, 0], 9090));
+
+        assert_eq!(
+            bind_addr(METRICS_ADDR_VAR, None, DEFAULT_METRICS_ADDR),
+            Ok(all_interfaces)
+        );
+        assert_eq!(
+            bind_addr(METRICS_ADDR_VAR, Some(""), DEFAULT_METRICS_ADDR),
+            Ok(all_interfaces)
+        );
+    }
+
+    #[test]
+    fn a_configured_bind_address_replaces_the_default() {
+        assert_eq!(
+            bind_addr(
+                METRICS_ADDR_VAR,
+                Some("127.0.0.1:9100"),
+                DEFAULT_METRICS_ADDR
+            ),
+            Ok(SocketAddr::from(([127, 0, 0, 1], 9100)))
+        );
+    }
+
+    #[test]
+    fn a_bind_address_that_does_not_parse_is_an_error_naming_the_variable() {
+        for value in ["nope", "127.0.0.1", "localhost:9090"] {
+            let error = bind_addr(METRICS_ADDR_VAR, Some(value), DEFAULT_METRICS_ADDR).unwrap_err();
+            assert!(
+                error.contains("MICROSCOPE_METRICS_ADDR"),
+                "{value}: {error}"
+            );
+        }
+    }
 
     /// The panels chart these directly, with no `vector(0)` fallback left to
     /// cover an unseeded counter.
