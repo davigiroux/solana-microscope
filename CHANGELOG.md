@@ -8,6 +8,13 @@ version and the section heading below.
 
 ## [Unreleased]
 
+### Added
+
+- `MICROSCOPE_METRICS_ADDR` and `MICROSCOPE_PROBE_ADDR` set the addresses the
+  metrics exporter and the health probes listen on, for example
+  `127.0.0.1:9090` on a host without Docker. Unset, they stay `0.0.0.0:9090`
+  and `0.0.0.0:9091`; a value that does not parse stops startup.
+
 ### Fixed
 
 - Event, instruction and multisig alerts on Slack and Telegram no longer send
