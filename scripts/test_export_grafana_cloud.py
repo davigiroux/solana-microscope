@@ -20,6 +20,43 @@ def scope(expr, deployment="mainnet"):
     return proc.stdout.strip()
 
 
+def export_routes(routes, deployment="mainnet"):
+    program = re.search(
+        r"""^jq --arg deployment "\$DEPLOYMENT" '([^']*)' "\$document" >"notification-policies/\$DEPLOYMENT-routes\.json"$""",
+        SCRIPT.read_text(),
+        re.M,
+    ).group(1)
+    proc = subprocess.run(
+        ["jq", "--arg", "deployment", deployment, program],
+        input=json.dumps({"policies": [{"routes": routes}]}),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(proc.stdout)
+
+
+# The routes as alerting.rs emits them.
+MUTE_ROUTE = {
+    "receiver": "microscope-noop",
+    "object_matchers": [["channel", "=", "none"]],
+    "mute_time_intervals": ["microscope-always"],
+    "continue": False,
+}
+
+
+def health_route(channel, receiver):
+    return {
+        "receiver": receiver,
+        "object_matchers": [["channel", "=", channel], ["signal_kind", "=", "datasource"]],
+        "group_by": ["deployment", "signal_kind"],
+        "group_wait": "60s",
+        "group_interval": "5m",
+        "repeat_interval": "4h",
+        "continue": False,
+    }
+
+
 @unittest.skipIf(shutil.which("jq") is None, "export-grafana-cloud.sh needs jq")
 class ScopeExprs(unittest.TestCase):
     def test_merges_the_deployment_into_existing_matchers(self):
@@ -39,6 +76,43 @@ class ScopeExprs(unittest.TestCase):
             scope('sum(count_over_time({service_name="microscope-indexer"} |= "x" [60s]))'),
             'sum(count_over_time({service_name="microscope-indexer", deployment="mainnet"} |= "x" [60s]))',
         )
+
+
+@unittest.skipIf(shutil.which("jq") is None, "export-grafana-cloud.sh needs jq")
+class Routes(unittest.TestCase):
+    def test_exports_the_health_routes_only_with_own_policy_tree(self):
+        mute = {
+            "receiver": "mainnet-noop",
+            "object_matchers": [["channel", "=", "none"], ["deployment", "=", "mainnet"]],
+            "mute_time_intervals": ["microscope-always"],
+            "continue": False,
+        }
+        self.assertEqual(export_routes([MUTE_ROUTE]), [mute])
+
+        exported = export_routes([
+            MUTE_ROUTE,
+            health_route("slack", "microscope-slack"),
+            health_route("telegram", "microscope-telegram"),
+        ])
+        self.assertEqual(exported, [
+            mute,
+            {
+                **health_route("slack", "mainnet-slack"),
+                "object_matchers": [
+                    ["channel", "=", "slack"],
+                    ["signal_kind", "=", "datasource"],
+                    ["deployment", "=", "mainnet"],
+                ],
+            },
+            {
+                **health_route("telegram", "mainnet-telegram"),
+                "object_matchers": [
+                    ["channel", "=", "telegram"],
+                    ["signal_kind", "=", "datasource"],
+                    ["deployment", "=", "mainnet"],
+                ],
+            },
+        ])
 
 
 if __name__ == "__main__":

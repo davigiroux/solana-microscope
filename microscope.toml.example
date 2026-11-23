@@ -46,6 +46,10 @@ evaluation_interval_seconds = 10
 # Tag someone on every health alert sent to Slack: a Slack user ID such as
 # U0123ABCDEF, "@here" or "@channel".
 # health_slack_mention = "@here"
+# Group the health alerts of one outage into one Slack or Telegram message, by
+# routing them through Grafana's notification-policy tree. On Grafana Cloud the
+# tree belongs to the whole org: merge the exported routes before the rules.
+# own_policy_tree = false
 # Notifications link the matched transaction here. Append ?cluster=devnet for
 # devnet deployments, or point it at another explorer.
 explorer_transaction_url = "https://explorer.solana.com/tx/{signature}"

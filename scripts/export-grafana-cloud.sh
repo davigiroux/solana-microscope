@@ -20,15 +20,22 @@ rewrites it for the shared Grafana Cloud stack into:
 Import dashboards through the Grafana UI; push alert rules, contact
 points, and mute timings through the Grafana provisioning API. Merge
 <deployment>-routes.json into the shared notification-policy tree by
-hand; it is not a standalone resource. It holds only the route that
-mutes alerts without a channel: rules with one name their receiver, and
-Grafana routes those ahead of the tree.
+hand; it is not a standalone resource. By default it holds only the
+route that mutes alerts without a channel: rules with one name their
+receiver, and Grafana routes those ahead of the tree.
 
-Every exported rule names <deployment>-<channel> as its receiver, or
-<deployment>-<channel>-activity for Slack and Telegram activity alerts,
-so push the contact points before the rules: a rule whose receiver does
-not exist is rejected. Rules for a deployment whose contact points are
-named differently need that receiver rewritten before the push.
+With alerting.own_policy_tree = true it also holds one route per Slack
+or Telegram channel, which groups this deployment's health alerts, and
+the health rules for those channels name no receiver. Push the contact
+points, merge the routes, then push the rules, or those alerts go
+wherever the shared tree sends unmatched alerts.
+
+Every other exported rule names <deployment>-<channel> as its receiver,
+or <deployment>-<channel>-activity for Slack and Telegram activity
+alerts, so push the contact points before the rules: a rule whose
+receiver does not exist is rejected. Rules for a deployment whose
+contact points are named differently need that receiver rewritten
+before the push.
 
 Run `just generate` for <config>'s program first: the export refuses to
 run when the config targets a different program than the compiled
@@ -192,6 +199,12 @@ jq --arg deployment "$DEPLOYMENT" '
    | .receiver |= sub("^microscope-"; $deployment + "-")
    | .object_matchers += [["deployment", "=", $deployment]]]
 ' "$document" >"notification-policies/$DEPLOYMENT-routes.json"
+
+if jq --exit-status 'any(.[]; has("group_by"))' \
+  "notification-policies/$DEPLOYMENT-routes.json" >/dev/null; then
+  echo "health alerts route through the notification-policy tree: merge" \
+    "notification-policies/$DEPLOYMENT-routes.json into it before pushing the rules" >&2
+fi
 
 report_removals() {
   local previous="$1" endpoint="$2" removed

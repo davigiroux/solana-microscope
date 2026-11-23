@@ -17,6 +17,16 @@ version and the section heading below.
   which Grafana Cloud exports as `<deployment>-slack-<mention>`. Rule UIDs do
   not change. In Terraform, set `slack_mention` on an `alerts` object and
   `health_slack_mention` in `alerting`.
+- `alerting.own_policy_tree = true` groups health alerts on Slack and Telegram:
+  the health rules that fire in one outage arrive as one message instead of
+  one each. Alerts that fire later and recoveries come as follow-up messages
+  for the group, at most one every 5 minutes, so recoveries that happen apart
+  still arrive apart. It is off by default, because it routes those alerts
+  through Grafana's notification-policy tree, which is org-wide on Grafana
+  Cloud: with it on, `<deployment>-routes.json` holds the health routes, and
+  they have to be merged into the tree before the rules are pushed. PagerDuty
+  and activity alerts are unchanged. In Terraform, set
+  `alerting.own_policy_tree`.
 
 ## [0.2.0-rc.1] - 2026-11-24
 

@@ -35,6 +35,10 @@ const YELLOWSTONE_GAP_WINDOW_SECONDS: u64 = 600;
 /// page on its own but a provider that refuses every connection does.
 const YELLOWSTONE_PROBE_WINDOW_SECONDS: u64 = 120;
 pub(crate) const RPC_POLL_FAILURE_WINDOW_SECONDS: u64 = 900;
+/// Two evaluations of the health group, so rules failing together share a message.
+const HEALTH_GROUP_WAIT: &str = "60s";
+const HEALTH_GROUP_INTERVAL: &str = "5m";
+const HEALTH_REPEAT_INTERVAL: &str = "4h";
 
 pub fn generate(config: &Config, output_dir: &Path) -> anyhow::Result<PathBuf> {
     let rpc_polling = config.datasource.polls_rpc();
@@ -160,6 +164,17 @@ fn provisioning_document(
     if rpc_polling {
         health_rules.extend(rpc_health_rules(config, channels, pending_seconds));
     }
+    if config.alerting.own_policy_tree {
+        // The route Grafana derives from a rule's receiver always groups by
+        // alert name, so the tree has to route these.
+        for rule in health_rules.iter_mut() {
+            let grouped = grouped_health_channels(channels)
+                .any(|channel| rule["labels"]["channel"] == channel.as_str());
+            if let Some(rule) = rule.as_object_mut().filter(|_| grouped) {
+                rule.remove("notification_settings");
+            }
+        }
+    }
     for alert in &config.alert_rules {
         let rules = rules_by_interval
             .entry(alert.evaluation_interval_seconds(&config.alerting))
@@ -229,6 +244,16 @@ fn provisioning_document(
         ));
     }
 
+    let mut routes = vec![json!({
+        "receiver": "microscope-noop",
+        "object_matchers": [["channel", "=", "none"]],
+        "mute_time_intervals": ["microscope-always"],
+        "continue": false,
+    })];
+    if config.alerting.own_policy_tree {
+        routes.extend(grouped_health_channels(channels).map(health_route));
+    }
+
     Ok(json!({
         "apiVersion": 1,
         "groups": groups,
@@ -248,12 +273,7 @@ fn provisioning_document(
             "group_wait": "5s",
             "group_interval": "1m",
             "repeat_interval": "4h",
-            "routes": [{
-                "receiver": "microscope-noop",
-                "object_matchers": [["channel", "=", "none"]],
-                "mute_time_intervals": ["microscope-always"],
-                "continue": false,
-            }],
+            "routes": routes,
         }],
     }))
 }
@@ -296,6 +316,41 @@ const fn activity_skips_resolve(channel: AlertChannel) -> bool {
         AlertChannel::Slack | AlertChannel::Telegram => true,
         AlertChannel::Pagerduty => false,
     }
+}
+
+/// A group of mixed severities reaches PagerDuty as one critical incident.
+const fn groups_health_alerts(channel: AlertChannel) -> bool {
+    match channel {
+        AlertChannel::Slack | AlertChannel::Telegram => true,
+        AlertChannel::Pagerduty => false,
+    }
+}
+
+fn grouped_health_channels(
+    channels: &BTreeSet<AlertChannel>,
+) -> impl Iterator<Item = AlertChannel> + '_ {
+    channels
+        .iter()
+        .copied()
+        .filter(|channel| groups_health_alerts(*channel))
+}
+
+fn health_route(channel: AlertChannel) -> Value {
+    json!({
+        "receiver": receiver(channel, false),
+        "object_matchers": [
+            ["channel", "=", channel.as_str()],
+            ["signal_kind", "=", "datasource"],
+        ],
+        // Only the Grafana Cloud export adds a deployment label. Alertmanager
+        // leaves a label the alert lacks out of the group.
+        "group_by": ["deployment", "signal_kind"],
+        // Set on the route, or a shared tree's root would decide them.
+        "group_wait": HEALTH_GROUP_WAIT,
+        "group_interval": HEALTH_GROUP_INTERVAL,
+        "repeat_interval": HEALTH_REPEAT_INTERVAL,
+        "continue": false,
+    })
 }
 
 fn receiver(channel: AlertChannel, activity: bool) -> String {
@@ -1186,8 +1241,8 @@ mod tests {
     };
 
     use super::{
-        add_resource_deletions, deletion_uids, grafana_rule, log_stream_selector_for, logql_query,
-        provisioning_document, rule_uids, telegram_message,
+        add_resource_deletions, contact_point_uids, deletion_uids, grafana_rule,
+        log_stream_selector_for, logql_query, provisioning_document, rule_uids, telegram_message,
     };
 
     fn alert(kind: AlertKind, name: &str) -> AlertRule {
@@ -2551,6 +2606,141 @@ mod tests {
                 "continue": false,
             }])
         );
+    }
+
+    fn every_channel() -> BTreeSet<AlertChannel> {
+        BTreeSet::from([
+            AlertChannel::Slack,
+            AlertChannel::Telegram,
+            AlertChannel::Pagerduty,
+        ])
+    }
+
+    fn alerts_on_every_channel() -> Vec<AlertRule> {
+        every_channel()
+            .into_iter()
+            .map(|channel| alert_with_channel(AlertKind::Event, "created", channel))
+            .collect()
+    }
+
+    fn own_policy_tree(alert_rules: Vec<AlertRule>) -> Config {
+        let mut config = config(alert_rules);
+        config.alerting.own_policy_tree = true;
+        config
+    }
+
+    #[test]
+    fn own_policy_tree_adds_a_grouped_health_route_for_slack_and_telegram() {
+        let document =
+            provisioning_document(&own_policy_tree(vec![]), &every_channel(), false).unwrap();
+
+        let health_route = |channel: &str| {
+            serde_json::json!({
+                "receiver": format!("microscope-{channel}"),
+                "object_matchers": [["channel", "=", channel], ["signal_kind", "=", "datasource"]],
+                "group_by": ["deployment", "signal_kind"],
+                "group_wait": "60s",
+                "group_interval": "5m",
+                "repeat_interval": "4h",
+                "continue": false,
+            })
+        };
+        assert_eq!(
+            document["policies"][0]["routes"],
+            serde_json::json!([
+                {
+                    "receiver": "microscope-noop",
+                    "object_matchers": [["channel", "=", "none"]],
+                    "mute_time_intervals": ["microscope-always"],
+                    "continue": false,
+                },
+                health_route("slack"),
+                health_route("telegram"),
+            ])
+        );
+    }
+
+    #[test]
+    fn own_policy_tree_routes_name_contact_points_the_document_declares() {
+        let document =
+            provisioning_document(&own_policy_tree(vec![]), &every_channel(), false).unwrap();
+
+        let declared = contact_point_uids(&document);
+        for route in document["policies"][0]["routes"].as_array().unwrap() {
+            let receiver = route["receiver"].as_str().unwrap();
+            assert!(declared.contains(receiver), "{receiver}");
+        }
+    }
+
+    #[test]
+    fn own_policy_tree_takes_the_receiver_off_slack_and_telegram_health_rules_only() {
+        let document = provisioning_document(
+            &own_policy_tree(alerts_on_every_channel()),
+            &every_channel(),
+            true,
+        )
+        .unwrap();
+
+        let mut grouped = 0;
+        for rule in rules(&document) {
+            let channel = rule["labels"]["channel"].as_str().unwrap();
+            let health = rule["labels"]["signal_kind"] == "datasource";
+            let expected = match (health, channel) {
+                (true, "slack" | "telegram") => None,
+                (false, "slack" | "telegram") => Some(format!("microscope-{channel}-activity")),
+                _ => Some(format!("microscope-{channel}")),
+            };
+            grouped += usize::from(expected.is_none());
+            assert_eq!(
+                rule.get("notification_settings")
+                    .map(|settings| settings["receiver"].as_str().unwrap().to_string()),
+                expected,
+                "{}",
+                rule["title"]
+            );
+        }
+        assert!(grouped > 0);
+    }
+
+    #[test]
+    fn own_policy_tree_changes_nothing_but_the_routing() {
+        let without_routing = |config: &Config| {
+            let mut document = provisioning_document(config, &every_channel(), true).unwrap();
+            document["policies"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove("routes");
+            for group in document["groups"].as_array_mut().unwrap() {
+                for rule in group["rules"].as_array_mut().unwrap() {
+                    rule.as_object_mut()
+                        .unwrap()
+                        .remove("notification_settings");
+                }
+            }
+            document
+        };
+        let default = without_routing(&config(alerts_on_every_channel()));
+        let opted_in = without_routing(&own_policy_tree(alerts_on_every_channel()));
+
+        assert_eq!(default, opted_in);
+        assert_eq!(rule_uids(&default), rule_uids(&opted_in));
+        assert_eq!(contact_point_uids(&default), contact_point_uids(&opted_in));
+    }
+
+    #[test]
+    fn own_policy_tree_without_a_channel_keeps_only_the_muted_route() {
+        let document = provisioning_document(
+            &own_policy_tree(vec![alert(AlertKind::Event, "created")]),
+            &Default::default(),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(
+            document["policies"][0]["routes"].as_array().unwrap().len(),
+            1
+        );
+        assert!(rules(&document).all(|rule| rule.get("notification_settings").is_none()));
     }
 
     #[test]

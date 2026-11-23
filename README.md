@@ -257,6 +257,23 @@ Event, instruction and multisig alerts carry the explorer link alone in a
 `transaction_url` annotation, for notification templates of your own. The
 `transaction` annotation still holds the signature followed by that link.
 
+Each health alert sends its own message, so an outage that trips several
+health rules sends several, and as many again when they recover. Set
+`own_policy_tree = true` under `[alerting]` to group them on Slack and
+Telegram: health alerts that fire within 60 seconds of the first one arrive as
+one message. An alert that fires later, and each recovery, comes in a
+follow-up message for the group, at most one every 5 minutes, so recoveries
+that happen apart still arrive apart. A follow-up can list an alert that
+already recovered a second time, because Grafana keeps sending a resolved
+alert to Alertmanager for some minutes. PagerDuty keeps one incident per
+health alert.
+
+The option routes those health alerts through Grafana's notification-policy
+tree instead of naming the contact point on the rule. The local stack has a
+tree of its own, so nothing else is needed there. On Grafana Cloud the tree
+belongs to the whole org; read
+[Hosted Grafana Cloud stack](#hosted-grafana-cloud-stack) before turning it on.
+
 See [`microscope.toml.example`](microscope.toml.example) for all options.
 
 ## Datasource modes
@@ -726,6 +743,16 @@ alerts and `<deployment>-<channel>-activity`, which sends no resolved message,
 for activity alerts. Each distinct Slack mention adds a
 `<deployment>-slack-<mention>` activity contact point. The Telegram contact points carry the message template in
 `settings.message`, so push them again after an upgrade that changes it.
+
+`notification-policies/<deployment>-routes.json` is not a resource to push. It
+lists the routes to merge by hand into the org's notification-policy tree. By
+default that is one route, which mutes alerts without a channel. With
+`own_policy_tree = true` it also holds one route for Slack and one for
+Telegram, matching this deployment's health alerts, and the exported health
+rules for those channels name no receiver. Push the contact points, merge the
+routes above any route that would match the same alerts first, and only then
+push the rules: until the routes are in the tree, those health alerts go
+wherever the org's tree sends unmatched alerts.
 
 Pushing only creates and updates. Rules and contact points that disappear from
 an export stay active in the tenant, and because rule UIDs are content-derived,
