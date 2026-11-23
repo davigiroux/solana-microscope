@@ -10,13 +10,53 @@ version and the section heading below.
 
 ### Added
 
+- One deployment can monitor several programs. Write one `[[programs]]` table
+  per program in `microscope.toml`, each with its own `program_id` and
+  `idl_path`; one decoder per program is generated and compiled into the image.
+  The top-level `program_id` and `idl_path` keys keep working for one program,
+  and such a deployment keeps its alert rule UIDs, RPC checkpoint and shipped
+  journal. Event and instruction alerts cover every program unless they set
+  `program_id`, and name the program that matched in a `program_id`
+  annotation. Adding a program to a running deployment changes the monitored
+  addresses, so RPC recovery stays disabled until the RPC checkpoint is removed
+  (see "RPC recovery disabled itself" in `docs/operations.md`). In Terraform,
+  set the new `programs` list instead of `program_id`; the `Publish Docker
+  Image` workflow takes comma-separated `program_id` and `idl_path` lists.
+- One deployment can monitor several Squads multisigs, of mixed versions. Write
+  one `[[multisig]]` table per multisig in `microscope.toml`, or set the new
+  `multisigs` Terraform list instead of `multisig`. Existing single-multisig
+  configs load unchanged and keep their alert rule UIDs. Multisig alerts cover
+  every configured vault and name the one that matched in a `vault_address`
+  annotation; a `vault_address` condition narrows one to a single multisig.
+  Adding a multisig to a running deployment changes the monitored addresses,
+  so RPC recovery stays disabled until the RPC checkpoint is removed (see
+  "RPC recovery disabled itself" in `docs/operations.md`).
 - `MICROSCOPE_METRICS_ADDR` and `MICROSCOPE_PROBE_ADDR` set the addresses the
   metrics exporter and the health probes listen on, for example
   `127.0.0.1:9090` on a host without Docker. Unset, they stay `0.0.0.0:9090`
   and `0.0.0.0:9091`; a value that does not parse stops startup.
 
+### Changed
+
+- `microscope_instructions_total` and `microscope_program_events_total` carry a
+  `program_id` label.
+- The Yellowstone subscription uses one transaction filter that includes every
+  monitored address, instead of one filter for the program and one for the
+  multisig state accounts.
+- The VM reconciler (`infra/deploy-microscope.sh`) changed to fetch one IDL per
+  program. It ships in the VM's bootstrap data, so the next `terraform apply`
+  replaces an AWS VM, and a GCP VM needs
+  `terraform apply -replace=google_compute_instance.this` before it can deploy
+  several programs. A replaced VM loses its local history and RPC checkpoint
+  (see "Updating a deployment" in `infra/README.md`).
+- The generated program decoder moved from `crates/program-decoder` to
+  `crates/programs/0`, beside a generated `crates/programs` crate that lists
+  every configured program. Run `just generate` after pulling.
+
 ### Fixed
 
+- The AWS module gzip-compresses the VM's user data. Uncompressed, the
+  bootstrap with its embedded reconciler was larger than the 16 KB EC2 accepts.
 - Event, instruction and multisig alerts on Slack and Telegram no longer send
   a second "resolved" notification after every match. They go to a new
   `microscope-<channel>-activity` contact point with resolved messages off;

@@ -9,7 +9,7 @@ Generated for every deployment, independent of the monitored program, so these a
 | Always | `rpc_recovery_disabled`, `rpc_checkpoint_corrupt`, `datasource_updates_dropped`, `log_delivery_stalled` |
 | `datasource.mode = "yellowstone"` | `yellowstone_endpoint_unreachable`, `yellowstone_stream_interrupted`, `yellowstone_gap_unrecovered`, `yellowstone_fallback_active`, `yellowstone_endpoint_degraded` |
 | `RPC_URL` set, or `mode = "rpc"` | `rpc_poll_stale`, `rpc_poll_lag`, `rpc_poll_failing`, `rpc_checkpoint_stale`, `rpc_transaction_quarantined`, `rpc_fallback_active`, `rpc_endpoint_degraded` |
-| `[multisig]` configured | `multisig_unmatched_state` |
+| `[multisig]` or `[[multisig]]` configured | `multisig_unmatched_state` |
 
 Only a deployment meeting every condition at once has all of them, and Grafana shows more rules than signals, because each signal generates one rule per notification channel. An operator asking why they never see one of these has probably not met its condition; check the deployment before treating absence as a bug. `microscope.toml` is safe to read. `.env` is not: every variable in it except `MICROSCOPE_DEPLOYMENT` and `MICROSCOPE_ENV` is a credential. The conditions only need to know which variables are set, so read the names alone:
 
@@ -53,7 +53,7 @@ Step 4 of the procedure requires an explicit answer. Classify by alert:
 | `rpc_fallback_active` | No. The cursors carry over to the fallback. The primary RPC provider is down, or cannot serve the checkpoint; check its status page and the indexer log |
 | `yellowstone_endpoint_degraded`, `rpc_endpoint_degraded` | No. Another endpoint is working. The redundancy is gone: the `endpoint` label at 0 on `microscope_yellowstone_probe_healthy` or `microscope_rpc_endpoint_healthy` names the one to fix, usually a wrong fallback URL or token when it fires from the start |
 | `rpc_checkpoint_stale` | Not while running. A restart resumes from a stale cursor and re-fetches or misses the uncheckpointed window |
-| `multisig_unmatched_state` | No. This is a configuration fault: nothing was recorded for the configured vault because the config names the wrong account |
+| `multisig_unmatched_state` | No. This is a configuration fault: nothing was recorded for a configured vault because the config names the wrong account |
 | `DatasourceError` | No. Grafana failed to query, the indexer kept indexing. Every rule whose query failed was blind for the duration, `log_delivery_stalled` included, so confirm the indexer's own metrics and the Loki records for that window |
 
 ## Remediation

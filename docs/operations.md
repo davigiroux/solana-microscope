@@ -59,8 +59,9 @@ Squads panels stay empty until the multisig produces a supported action.
 
 ### Indexer refuses to start
 
-The decoder is compiled in, so the `program_id` and IDL in `microscope.toml`
-must be the ones the image was built from. Change both together and
+The decoders are compiled in, so every `program_id` and IDL in
+`microscope.toml`, and their order under `[[programs]]`, must be the ones the
+image was built from. Change them together and
 `docker compose up --build --detach`. A `[multisig]` rejection is the vault and
 state pair or the `version`, see above.
 
@@ -117,7 +118,7 @@ endpoint has been. For exhausted history, point `RPC_URL` at an endpoint holding
 missing slots, or backfill the gap and remove the checkpoint. A checkpoint whose
 cluster, program, or addresses do not match the deployment disables recovery on
 purpose; fix the config or endpoint, and remove it only if the target genuinely
-changed:
+changed. Adding or removing a multisig is such a change:
 
 ```sh
 docker compose stop indexer

@@ -57,7 +57,7 @@ struct Endpoint {
     label: String,
 }
 
-pub fn yellowstone(program_id: &str, multisig_state_address: Option<Pubkey>) -> FailoverDatasource {
+pub fn yellowstone(monitored_addresses: &[Pubkey]) -> FailoverDatasource {
     let endpoints = endpoints(
         &env::var("GEYSER_URL").unwrap_or_default(),
         env::var("GEYSER_X_TOKEN").ok().as_deref(),
@@ -81,7 +81,7 @@ pub fn yellowstone(program_id: &str, multisig_state_address: Option<Pubkey>) -> 
     }
     let clients = endpoints
         .iter()
-        .map(|endpoint| client(endpoint, program_id, multisig_state_address))
+        .map(|endpoint| client(endpoint, monitored_addresses))
         .collect();
     let datasource = FailoverDatasource { endpoints, clients };
     telemetry::set_yellowstone_active_endpoint(&datasource.labels(), 0);
@@ -310,11 +310,7 @@ async fn probe_subscribe(endpoint: &Endpoint) -> Result<(), String> {
     }
 }
 
-fn client(
-    endpoint: &Endpoint,
-    program_id: &str,
-    multisig_state_address: Option<Pubkey>,
-) -> YellowstoneGrpcGeyserClient {
+fn client(endpoint: &Endpoint, monitored_addresses: &[Pubkey]) -> YellowstoneGrpcGeyserClient {
     let (disconnections, notifications) = mpsc::channel(DISCONNECT_NOTIFICATION_BUFFER);
     telemetry::initialize_yellowstone(&endpoint.label);
     let label = endpoint.label.clone();
@@ -327,7 +323,7 @@ fn client(
         endpoint.x_token.clone(),
         Some(CommitmentLevel::Confirmed),
         HashMap::new(),
-        transaction_filters(program_id, multisig_state_address),
+        transaction_filters(monitored_addresses),
         Default::default(),
         YellowstoneGrpcClientConfig::default().with_reconnect(reconnect()),
         Some(disconnections),
@@ -417,29 +413,27 @@ async fn record_disconnections(
     }
 }
 
+/// Included accounts are ORed, so every monitored address shares one filter
+/// and the subscription stays within endpoints that allow a single one.
 fn transaction_filters(
-    program_id: &str,
-    multisig_state_address: Option<Pubkey>,
+    monitored_addresses: &[Pubkey],
 ) -> HashMap<String, SubscribeRequestFilterTransactions> {
-    let requiring = |address: String| SubscribeRequestFilterTransactions {
-        vote: Some(false),
-        failed: None,
-        signature: None,
-        account_include: vec![],
-        account_exclude: vec![],
-        account_required: vec![address],
-        cuckoo_account_include: None,
-        token_accounts: None,
-    };
-    let mut transaction_filters =
-        HashMap::from([("program".to_string(), requiring(program_id.to_string()))]);
-    if let Some(state_address) = multisig_state_address {
-        transaction_filters.insert(
-            "multisig_state".to_string(),
-            requiring(state_address.to_string()),
-        );
-    }
-    transaction_filters
+    HashMap::from([(
+        "monitored".to_string(),
+        SubscribeRequestFilterTransactions {
+            vote: Some(false),
+            failed: None,
+            signature: None,
+            account_include: monitored_addresses
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            account_exclude: vec![],
+            account_required: vec![],
+            cuckoo_account_include: None,
+            token_accounts: None,
+        },
+    )])
 }
 
 #[cfg(test)]
@@ -548,14 +542,14 @@ mod tests {
 
     #[tokio::test]
     async fn subscribes_with_a_notifier_so_gaps_are_not_silent() {
-        let client = client(&endpoint("http://localhost:10000"), "program", None);
+        let client = client(&endpoint("http://localhost:10000"), &[]);
 
         assert!(client.disconnect_notifier.is_some());
     }
 
     #[tokio::test]
     async fn recovers_a_disconnect_by_replaying_it_rather_than_resuming_at_the_head() {
-        let client = client(&endpoint("http://localhost:10000"), "program", None);
+        let client = client(&endpoint("http://localhost:10000"), &[]);
 
         let configured = client
             .geyser_config
@@ -846,25 +840,15 @@ mod tests {
     }
 
     #[test]
-    fn subscribes_to_the_program_only_without_a_multisig() {
-        let filters = transaction_filters("program", None);
+    fn subscribes_to_every_monitored_address_in_one_filter() {
+        let addresses = [Pubkey::new_unique(), Pubkey::new_unique()];
+        let filters = transaction_filters(&addresses);
 
         assert_eq!(filters.len(), 1);
-        assert_eq!(filters["program"].account_required, ["program"]);
-    }
-
-    #[test]
-    fn subscribes_to_the_multisig_state_account_and_not_the_vault() {
-        let state = Pubkey::new_unique();
-        let filters = transaction_filters("program", Some(state));
-
-        assert_eq!(filters.len(), 2);
-        assert_eq!(filters["program"].account_required, ["program"]);
         assert_eq!(
-            filters["multisig_state"].account_required,
-            [state.to_string()]
+            filters["monitored"].account_include,
+            addresses.map(|address| address.to_string())
         );
-        assert!(!filters.contains_key("multisig_vault"));
-        assert!(filters.keys().all(|name| !name.starts_with("squads_")));
+        assert!(filters["monitored"].account_required.is_empty());
     }
 }

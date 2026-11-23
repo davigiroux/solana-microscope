@@ -82,8 +82,9 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 mkdir -p "$out/src/instructions"
-touch "$out/Cargo.toml" "$out/src/instructions/cpi_event.rs"
-echo "mod base58" > "$out/src/lib.rs"
+touch "$out/src/instructions/cpi_event.rs"
+printf '[package]\nname = "program-decoder"\n' > "$out/Cargo.toml"
+printf 'mod base58;\npub struct ProgramDecoder;\n' > "$out/src/lib.rs"
 """
 
 
@@ -113,7 +114,7 @@ class GenerateDecoderStamp(unittest.TestCase):
                 'program_id = "11111111111111111111111111111111"\nidl_path = "idl.json"\n'
             )
             env = {**os.environ, "PATH": f"{root / 'bin'}:/usr/bin:/bin"}
-            stamp = root / "crates" / "program-decoder" / ".microscope-source.sha256"
+            stamp = root / "crates" / "programs" / "0" / ".microscope-source.sha256"
 
             def run():
                 return subprocess.run(
@@ -125,13 +126,13 @@ class GenerateDecoderStamp(unittest.TestCase):
             before = stamp.read_text()
 
             unchanged = run()
-            self.assertIn("crates/program-decoder is up to date", unchanged.stdout)
+            self.assertIn("crates/programs/0 is up to date", unchanged.stdout)
             self.assertEqual(stamp.read_text(), before)
 
             with open(root / "scripts" / "idl_prune.py", "a") as helper:
                 helper.write("\n# touched\n")
             touched = run()
-            self.assertIn("generated crates/program-decoder", touched.stdout)
+            self.assertIn("generated crates/programs/0", touched.stdout)
             self.assertNotEqual(stamp.read_text(), before)
 
 

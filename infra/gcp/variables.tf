@@ -27,12 +27,35 @@ variable "name" {
 }
 
 variable "program_id" {
-  description = "Solana program monitored by this deployment."
+  description = "Solana program monitored by this deployment, with its IDL at idl_path. Set programs instead to monitor several."
   type        = string
+  default     = null
 
   validation {
-    condition     = can(regex("^[1-9A-HJ-NP-Za-km-z]{32,44}$", var.program_id))
+    condition     = var.program_id == null || can(regex("^[1-9A-HJ-NP-Za-km-z]{32,44}$", var.program_id))
     error_message = "program_id must be a base58 Solana public key."
+  }
+}
+
+variable "programs" {
+  description = "Optional list of programs, each with its program_id and an idl_path relative to this Terraform directory, for monitoring several in one deployment. Mutually exclusive with program_id; idl_path is then unused."
+  type = list(object({
+    program_id = string
+    idl_path   = string
+  }))
+  default = []
+
+  validation {
+    condition = alltrue([
+      for program in var.programs :
+      can(regex("^[1-9A-HJ-NP-Za-km-z]{32,44}$", program.program_id))
+    ])
+    error_message = "Each programs entry needs a base58 Solana public key for program_id."
+  }
+
+  validation {
+    condition     = length(distinct([for program in var.programs : program.program_id])) == length(var.programs)
+    error_message = "programs must not repeat a program_id."
   }
 }
 
@@ -55,8 +78,36 @@ variable "multisig" {
   }
 }
 
+variable "multisigs" {
+  description = "Optional list of Squads multisigs, each shaped like multisig, for monitoring several in one deployment. Mutually exclusive with multisig."
+  type = list(object({
+    vault_address = string
+    state_address = string
+    version       = string
+  }))
+  default = []
+
+  validation {
+    condition = alltrue([
+      for multisig in var.multisigs :
+      can(regex("^[1-9A-HJ-NP-Za-km-z]{32,44}$", multisig.vault_address)) &&
+      can(regex("^[1-9A-HJ-NP-Za-km-z]{32,44}$", multisig.state_address)) &&
+      contains(["v3", "v4", "v5"], multisig.version)
+    ])
+    error_message = "Each multisigs entry needs base58 Solana public keys for vault_address and state_address, and version v3, v4, or v5."
+  }
+
+  validation {
+    condition = (
+      length(distinct([for multisig in var.multisigs : multisig.vault_address])) == length(var.multisigs) &&
+      length(distinct([for multisig in var.multisigs : multisig.state_address])) == length(var.multisigs)
+    )
+    error_message = "multisigs must not repeat a vault_address or a state_address."
+  }
+}
+
 variable "idl_path" {
-  description = "IDL path relative to this Terraform directory."
+  description = "IDL path of program_id, relative to this Terraform directory."
   type        = string
   default     = "../../idl/idl1.json"
 }
@@ -307,6 +358,7 @@ variable "alerts" {
     channels                    = optional(set(string), [])
     lookback_window_seconds     = optional(number)
     evaluation_interval_seconds = optional(number)
+    program_id                  = optional(string)
   }))
   default = []
 

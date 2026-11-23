@@ -43,7 +43,11 @@ fn overview_document(config: &Config, rpc_polling: bool) -> anyhow::Result<Value
     let panels = dashboard["panels"]
         .as_array_mut()
         .ok_or_else(|| anyhow!("overview dashboard template is missing panels"))?;
-    #[cfg(program_events)]
+    // A program whose IDL declares no events emits none, so the panel would sit
+    // permanently empty, which reads the same as broken decoding.
+    if crate::programs::compiled()
+        .iter()
+        .any(|program| program.declares_events)
     {
         let event_panel = panels
             .iter_mut()
@@ -54,12 +58,21 @@ fn overview_document(config: &Config, rpc_polling: bool) -> anyhow::Result<Value
             &config.dashboard.event_fields,
             "event_field",
             "program_event",
-            ("program_id", &config.program_id),
-            "Decoded program events for the configured program. Missing configured fields display as a placeholder.",
+            (
+                "program_id",
+                &config
+                    .programs
+                    .iter()
+                    .map(|program| program.program_id.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            "Decoded program events for every configured program. Missing configured fields display as a placeholder.",
         );
+    } else {
+        remove_panels(panels, &[EVENT_PANEL_ID]);
     }
 
-    if let Some(multisig) = config.multisig.as_ref() {
+    if !config.multisigs.is_empty() {
         let multisig_panel = panels
             .iter_mut()
             .find(|panel| panel["id"].as_u64() == Some(MULTISIG_PANEL_ID))
@@ -69,8 +82,15 @@ fn overview_document(config: &Config, rpc_polling: bool) -> anyhow::Result<Value
             &config.dashboard.multisig_fields,
             "multisig_field",
             "multisig_activity",
-            ("vault_address", multisig.vault_address.as_str()),
-            "Squads multisig activity for the configured vault. Missing configured fields display as a placeholder.",
+            (
+                "vault_address",
+                &config
+                    .multisigs
+                    .iter()
+                    .map(|multisig| multisig.vault_address.as_str())
+                    .collect::<Vec<_>>(),
+            ),
+            "Squads multisig activity for every configured vault. Missing configured fields display as a placeholder.",
         );
     }
 
@@ -80,14 +100,9 @@ fn overview_document(config: &Config, rpc_polling: bool) -> anyhow::Result<Value
         ));
     }
 
-    if config.multisig.is_none() {
+    if config.multisigs.is_empty() {
         remove_panels(panels, &[MULTISIG_ACTIVITY_PANEL_ID, MULTISIG_PANEL_ID]);
     }
-
-    // A program whose IDL declares no events emits none, so the panel would sit
-    // permanently empty, which reads the same as broken decoding.
-    #[cfg(not(program_events))]
-    remove_panels(panels, &[EVENT_PANEL_ID]);
 
     Ok(dashboard)
 }
@@ -235,7 +250,7 @@ fn configure_table_panel(
     fields: &[String],
     field_prefix: &str,
     record_kind: &str,
-    (scope_path, scope_value): (&str, &str),
+    (scope_path, scope_values): (&str, &[&str]),
     description: &str,
 ) {
     let json_paths = fields
@@ -282,11 +297,11 @@ fn configure_table_panel(
         "showHeader": true,
         "sortBy": [{ "desc": true, "displayName": "Time" }],
     });
-    let scope_filter = json!(scope_value);
+    let scope_filter = scope_filter(scope_values);
     panel["targets"] = json!([{
         "datasource": { "type": "loki", "uid": "loki" },
         "editorMode": "code",
-        "expr": format!("{{service_name=\"microscope-indexer\"}} | json kind=\"kind\", scope=\"{scope_path}\" | kind = \"{record_kind}\" | scope = {scope_filter} | __error__ = \"\""),
+        "expr": format!("{{service_name=\"microscope-indexer\"}} | json kind=\"kind\", scope=\"{scope_path}\" | kind = \"{record_kind}\" | scope {scope_filter} | __error__ = \"\""),
         "queryType": "range",
         "refId": "A",
     }]);
@@ -311,6 +326,20 @@ fn configure_table_panel(
             },
         },
     ]);
+}
+
+pub(crate) fn scope_filter(values: &[&str]) -> String {
+    match values {
+        [value] => format!("= {}", json!(value)),
+        values => format!(
+            "=~ {}",
+            json!(values
+                .iter()
+                .map(|value| regex::escape(value))
+                .collect::<Vec<_>>()
+                .join("|"))
+        ),
+    }
 }
 
 fn field_key(prefix: &str, index: usize) -> String {
@@ -350,7 +379,7 @@ fn collision_safe_display_names(paths: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::config::{Config, DashboardConfig, DatasourceMode};
+    use crate::config::{Config, DatasourceMode};
     use serde_json::json;
 
     use super::{
@@ -359,13 +388,10 @@ mod tests {
     };
 
     fn config(event_fields: &[&str]) -> Config {
-        Config {
-            dashboard: DashboardConfig {
-                event_fields: event_fields.iter().map(|field| field.to_string()).collect(),
-                ..DashboardConfig::default()
-            },
-            ..crate::test_support::config()
-        }
+        let mut config = crate::test_support::config();
+        config.dashboard.event_fields =
+            event_fields.iter().map(|field| field.to_string()).collect();
+        config
     }
 
     #[test]
@@ -410,8 +436,8 @@ mod tests {
     #[test]
     fn table_panels_hide_records_from_a_previously_monitored_target() {
         let mut config = config(&["name"]);
-        config.program_id = "So11111111111111111111111111111111111111112".to_string();
-        config.multisig.as_mut().unwrap().vault_address =
+        config.programs[0].program_id = "So11111111111111111111111111111111111111112".to_string();
+        config.multisigs[0].vault_address =
             "SysvarC1ock11111111111111111111111111111111".to_string();
 
         let dashboard = overview_document(&config, false).expect("dashboard generates");
@@ -430,13 +456,33 @@ mod tests {
             .contains("| scope = \"SysvarC1ock11111111111111111111111111111111\""));
     }
 
+    #[test]
+    fn the_multisig_panel_shows_every_configured_vault() {
+        let mut config = config(&["name"]);
+        let mut second = config.multisigs[0].clone();
+        second.vault_address = "SysvarC1ock11111111111111111111111111111111".to_string();
+        config.multisigs.push(second);
+
+        let dashboard = overview_document(&config, false).expect("dashboard generates");
+        let panel = dashboard["panels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|panel| panel["id"] == MULTISIG_PANEL_ID)
+            .unwrap();
+
+        assert!(panel["targets"][0]["expr"].as_str().unwrap().contains(
+            "| scope =~ \"11111111111111111111111111111111|SysvarC1ock11111111111111111111111111111111\""
+        ));
+    }
+
     /// An unscoped multisig panel charts every multisig on the cluster, and a
     /// scoped one with no vault to scope to is permanently empty, which reads
     /// the same as broken decoding.
     #[test]
     fn leaves_out_the_multisig_panels_when_no_vault_is_configured() {
         let mut config = config(&["name"]);
-        config.multisig = None;
+        config.multisigs.clear();
 
         let dashboard = overview_document(&config, true).expect("dashboard generates");
         let panels = dashboard["panels"].as_array().unwrap();
@@ -486,7 +532,7 @@ mod tests {
     fn closes_the_vertical_gap_the_removed_multisig_panels_leave() {
         let mut config = config(&["name"]);
         let with_multisig = overview_document(&config, true).expect("dashboard generates");
-        config.multisig = None;
+        config.multisigs.clear();
         let without_multisig = overview_document(&config, true).expect("dashboard generates");
 
         let present = |id: u64| {

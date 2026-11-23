@@ -83,7 +83,17 @@ impl Datasource for RpcPollingDatasource {
             .iter()
             .map(|endpoint| endpoint.label.clone())
             .collect::<Vec<_>>();
-        let addresses = monitored_addresses(self.program_id, self.multisig_state_address);
+        let addresses = monitored_addresses(&self.program_ids, &self.multisig_state_addresses);
+        // On-disk identity: one program is its bare ID, several are joined.
+        let program_identity = {
+            let mut program_ids = self
+                .program_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            program_ids.sort();
+            program_ids.join(",")
+        };
         log::info!(
             "RPC polling monitors {}",
             addresses
@@ -146,12 +156,12 @@ impl Datasource for RpcPollingDatasource {
                 .map(ToString::to_string)
                 .collect::<Vec<_>>();
             addresses.sort();
-            format!("{genesis_hash} {} {}", self.program_id, addresses.join(","))
+            format!("{genesis_hash} {program_identity} {}", addresses.join(","))
         };
         let mut checkpoint = CheckpointStore::new(
             self.checkpoint_path.clone(),
             genesis_hash.clone(),
-            self.program_id.to_string(),
+            program_identity,
             addresses.iter().map(ToString::to_string).collect(),
             self.replay_window_slots,
         );
