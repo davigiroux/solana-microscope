@@ -319,6 +319,7 @@ variable "alerting" {
     health_pending_period_seconds      = optional(number)
     multisig_unmatched_window_seconds  = optional(number)
     health_slack_mention               = optional(string)
+    own_policy_tree                    = optional(bool)
   })
   default = {}
 
