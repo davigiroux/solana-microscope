@@ -38,9 +38,10 @@ version and the section heading below.
 - Telegram alerts arrive as a compact message: a severity icon, the signal
   name, the severity, the description, and one link each to the transaction
   and to its dashboard panel, or to the rule when the alert has no panel.
-  A recovered health alert is one `✅ resolved: <signal>` line. A message shows
-  at most five alerts and counts the rest, and cuts a long description, so it
-  stays inside Telegram's 4096-character limit. Slack and PagerDuty are
+  A recovered health alert is one `✅ resolved: <signal>` line. With several
+  programs or several multisigs, a line names the one that matched. A message
+  shows at most five alerts and counts the rest, and cuts a long description,
+  so it stays inside Telegram's 4096-character limit. Slack and PagerDuty are
   unchanged. On Grafana Cloud, push the Telegram contact points again to get
   the message.
 - Event, instruction and multisig alerts carry a `transaction_url` annotation

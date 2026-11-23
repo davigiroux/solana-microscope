@@ -198,9 +198,9 @@ fn provisioning_document(
         }],
     })];
     for channel in channels {
-        contact_points.push(contact_point(*channel, false));
+        contact_points.push(contact_point(config, *channel, false));
         if activity_skips_resolve(*channel) {
-            contact_points.push(contact_point(*channel, true));
+            contact_points.push(contact_point(config, *channel, true));
         }
     }
 
@@ -1004,12 +1004,12 @@ fn condition_description(condition: &AlertCondition) -> anyhow::Result<String> {
 const TELEGRAM_SINGLE_DESCRIPTION_LIMIT: usize = 3000;
 
 /// Longest description, in characters, of each alert when the Telegram message holds several.
-const TELEGRAM_GROUPED_DESCRIPTION_LIMIT: usize = 160;
+const TELEGRAM_GROUPED_DESCRIPTION_LIMIT: usize = 100;
 
-/// Go template for one alert in the Telegram message; `{limit}` stands for the description limit.
+/// Go template for one alert in the Telegram message; `{limit}` and `{matched}` are filled in.
 const TELEGRAM_ALERT: &str = r#"{{ if eq .Labels.severity "critical" }}🚨{{ else if eq .Labels.severity "error" }}🔴{{ else if eq .Labels.severity "warning" }}🟠{{ else }}🔵{{ end }} <b>{{ if eq .Labels.alertname "DatasourceError" }}DatasourceError: {{ end }}{{ or .Labels.signal_name .Labels.alertname | html | printf "%.64s" }}</b>{{ with .Labels.severity }} · {{ . | html | printf "%.16s" }}{{ end }}
 {{ or .Annotations.Error .Annotations.description .Annotations.summary | html | printf "%.{limit}s" }}
-{{ if .Annotations.transaction_url }}<a href="{{ .Annotations.transaction_url | html }}">Transaction</a> · {{ end }}{{ if .PanelURL }}<a href="{{ .PanelURL | html }}">Dashboard</a>{{ else if .DashboardURL }}<a href="{{ .DashboardURL | html }}">Dashboard</a>{{ else if .GeneratorURL }}<a href="{{ .GeneratorURL | html }}">Rule</a>{{ end }}
+{matched}{{ if .Annotations.transaction_url }}<a href="{{ .Annotations.transaction_url | html }}">Transaction</a> · {{ end }}{{ if .PanelURL }}<a href="{{ .PanelURL | html }}">Dashboard</a>{{ else if .DashboardURL }}<a href="{{ .DashboardURL | html }}">Dashboard</a>{{ else if .GeneratorURL }}<a href="{{ .GeneratorURL | html }}">Rule</a>{{ end }}
 
 "#;
 
@@ -1017,15 +1017,37 @@ const TELEGRAM_ALERT: &str = r#"{{ if eq .Labels.severity "critical" }}🚨{{ el
 const TELEGRAM_RESOLVED: &str =
     "✅ resolved: {{ or .Labels.signal_name .Labels.alertname | html | printf \"%.64s\" }}\n";
 
+/// Returns the Go template line that names the program or the vault an alert matched.
+fn telegram_matched_line(config: &Config) -> String {
+    let named = [
+        ("Program", "program_id", config.programs.len() > 1),
+        ("Vault", "vault_address", config.multisigs.len() > 1),
+    ];
+    let mut line = String::new();
+    for (label, annotation, _) in named.into_iter().filter(|(_, _, several)| *several) {
+        let keyword = if line.is_empty() { "if" } else { "else if" };
+        line += &format!(
+            "{{{{ {keyword} .Annotations.{annotation} }}}}{label} {{{{ .Annotations.{annotation} | html | printf \"%.44s\" }}}}\n"
+        );
+    }
+    if !line.is_empty() {
+        line += "{{ end }}";
+    }
+    line
+}
+
 /// Returns the Go template for one alert, with the description cut at `description_limit`.
-fn telegram_alert(description_limit: usize) -> String {
-    TELEGRAM_ALERT.replace("{limit}", &description_limit.to_string())
+fn telegram_alert(description_limit: usize, matched_line: &str) -> String {
+    TELEGRAM_ALERT
+        .replace("{limit}", &description_limit.to_string())
+        .replace("{matched}", matched_line)
 }
 
 /// Returns the Telegram message template: at most five firing alerts, then at most five resolved ones.
-fn telegram_message() -> String {
-    let single = telegram_alert(TELEGRAM_SINGLE_DESCRIPTION_LIMIT);
-    let grouped = telegram_alert(TELEGRAM_GROUPED_DESCRIPTION_LIMIT);
+fn telegram_message(config: &Config) -> String {
+    let matched_line = telegram_matched_line(config);
+    let single = telegram_alert(TELEGRAM_SINGLE_DESCRIPTION_LIMIT, &matched_line);
+    let grouped = telegram_alert(TELEGRAM_GROUPED_DESCRIPTION_LIMIT, &matched_line);
     [
         "{{ if eq (len .Alerts.Firing) 1 }}{{ range .Alerts.Firing }}",
         &single,
@@ -1046,13 +1068,13 @@ fn telegram_message() -> String {
     .concat()
 }
 
-fn contact_point(channel: AlertChannel, activity: bool) -> Value {
+fn contact_point(config: &Config, channel: AlertChannel, activity: bool) -> Value {
     let settings = match channel {
         AlertChannel::Slack => json!({ "url": "$SLACK_WEBHOOK_URL" }),
         AlertChannel::Telegram => json!({
             "bottoken": "$TELEGRAM_BOT_TOKEN",
             "chatid": "$TELEGRAM_CHAT_ID",
-            "message": telegram_message(),
+            "message": telegram_message(config),
             "parse_mode": "HTML",
             "disable_web_page_preview": true,
         }),
@@ -2043,6 +2065,37 @@ mod tests {
             .clone()
     }
 
+    fn several_programs() -> Config {
+        let mut config = config(vec![]);
+        config.programs.push(ProgramConfig {
+            program_id: "SysvarC1ock11111111111111111111111111111111".to_string(),
+            idl_path: "Cargo.toml".to_string(),
+        });
+        config
+    }
+
+    fn several_multisigs() -> Config {
+        let mut config = config(vec![]);
+        let mut second = config.multisigs[0].clone();
+        second.vault_address = "SysvarC1ock11111111111111111111111111111111".to_string();
+        config.multisigs.push(second);
+        config
+    }
+
+    fn several_programs_and_multisigs() -> Config {
+        let mut config = several_programs();
+        config.multisigs = several_multisigs().multisigs;
+        config
+    }
+
+    /// The message for one program and one multisig, and the one that names both.
+    fn telegram_messages() -> [String; 2] {
+        [
+            telegram_message(&config(vec![])),
+            telegram_message(&several_programs_and_multisigs()),
+        ]
+    }
+
     fn template_actions(message: &str) -> impl Iterator<Item = &str> {
         message.split("{{").skip(1).map(|rest| {
             let action = rest.split("}}").next().unwrap();
@@ -2092,30 +2145,37 @@ mod tests {
     /// substitute the `$NAME` credentials in a Grafana Cloud export.
     #[test]
     fn the_telegram_message_survives_grafana_env_expansion() {
-        assert!(!telegram_message().contains('$'));
+        for message in telegram_messages() {
+            assert!(!message.contains('$'));
+        }
+    }
+
+    fn printed_actions(message: &str) -> Vec<&str> {
+        template_actions(message)
+            .filter(|action| {
+                !["if", "else", "end", "range", "with", "len"].contains(&template_keyword(action))
+            })
+            .collect()
     }
 
     #[test]
     fn the_telegram_message_escapes_every_alert_value() {
-        let message = telegram_message();
-        let printed = template_actions(&message)
-            .filter(|action| {
-                !["if", "else", "end", "range", "with", "len"].contains(&template_keyword(action))
-            })
-            .collect::<Vec<_>>();
+        for message in telegram_messages() {
+            let printed = printed_actions(&message);
 
-        assert!(!printed.is_empty());
-        for action in printed {
-            let mut stages = action.split('|').map(str::trim).skip(1);
-            assert_eq!(
-                stages.next(),
-                Some("html"),
-                "`{action}` reaches Telegram unescaped"
-            );
-            assert!(
-                stages.all(|stage| stage.starts_with("printf \"%.")),
-                "`{action}` changes the text after it is escaped"
-            );
+            assert!(!printed.is_empty());
+            for action in printed {
+                let mut stages = action.split('|').map(str::trim).skip(1);
+                assert_eq!(
+                    stages.next(),
+                    Some("html"),
+                    "`{action}` reaches Telegram unescaped"
+                );
+                assert!(
+                    stages.all(|stage| stage.starts_with("printf \"%.")),
+                    "`{action}` changes the text after it is escaped"
+                );
+            }
         }
     }
 
@@ -2124,26 +2184,31 @@ mod tests {
     /// cannot split a tag, because the escaped text holds no `<`.
     #[test]
     fn the_telegram_message_bounds_every_text_it_prints() {
-        let message = telegram_message();
-        let unbounded = template_actions(&message)
-            .filter(|action| action.ends_with("| html"))
-            .collect::<BTreeSet<_>>();
+        for message in telegram_messages() {
+            let unbounded = printed_actions(&message)
+                .into_iter()
+                .filter(|action| {
+                    let last_stage = action.rsplit('|').next().unwrap().trim();
+                    !last_stage.starts_with("printf \"%.")
+                })
+                .collect::<BTreeSet<_>>();
 
-        assert_eq!(
-            unbounded,
-            BTreeSet::from([
-                ".Annotations.transaction_url | html",
-                ".DashboardURL | html",
-                ".GeneratorURL | html",
-                ".PanelURL | html",
-            ]),
-            "only a link address may be printed whole"
-        );
+            assert_eq!(
+                unbounded,
+                BTreeSet::from([
+                    ".Annotations.transaction_url | html",
+                    ".DashboardURL | html",
+                    ".GeneratorURL | html",
+                    ".PanelURL | html",
+                ]),
+                "only a link address may be printed whole"
+            );
+        }
     }
 
     #[test]
     fn a_single_alert_keeps_a_longer_description_than_grouped_alerts() {
-        let message = telegram_message();
+        let message = telegram_message(&config(vec![]));
         let (single, grouped) = message
             .split_once("{{ else if gt (len .Alerts.Firing) 5 }}")
             .unwrap();
@@ -2152,20 +2217,54 @@ mod tests {
 
         assert!(single.starts_with("{{ if eq (len .Alerts.Firing) 1 }}"));
         assert_eq!(single.matches(&description(3000)).count(), 1);
-        assert_eq!(grouped.matches(&description(160)).count(), 2);
+        assert_eq!(grouped.matches(&description(100)).count(), 2);
         assert_eq!(message.matches(".Annotations.summary").count(), 3);
     }
 
     #[test]
-    fn the_telegram_message_closes_every_block() {
-        let message = telegram_message();
-        let count = |keyword: &str| {
-            template_actions(&message)
-                .filter(|action| template_keyword(action) == keyword)
-                .count()
-        };
+    fn one_program_and_one_multisig_keep_the_three_line_message() {
+        let message = telegram_message(&config(vec![]));
 
-        assert_eq!(count("if") + count("range") + count("with"), count("end"));
+        assert!(!message.contains(".Annotations.program_id"));
+        assert!(!message.contains(".Annotations.vault_address"));
+    }
+
+    /// An alert covers every program or every vault, so only the message can
+    /// say which one a transaction touched.
+    #[test]
+    fn several_programs_or_multisigs_name_the_one_that_matched() {
+        let program = "{{ if .Annotations.program_id }}Program {{ .Annotations.program_id | html | printf \"%.44s\" }}\n";
+        let vault = |keyword: &str| {
+            format!(
+                "{{{{ {keyword} .Annotations.vault_address }}}}Vault {{{{ .Annotations.vault_address | html | printf \"%.44s\" }}}}\n"
+            )
+        };
+        let end = "{{ end }}{{ if .Annotations.transaction_url }}";
+
+        let message = telegram_message(&several_programs());
+        assert_eq!(message.matches(&format!("{program}{end}")).count(), 3);
+        assert!(!message.contains(".Annotations.vault_address"));
+
+        let message = telegram_message(&several_multisigs());
+        assert_eq!(message.matches(&format!("{}{end}", vault("if"))).count(), 3);
+        assert!(!message.contains(".Annotations.program_id"));
+
+        let message = telegram_message(&several_programs_and_multisigs());
+        let both = format!("{program}{}{end}", vault("else if"));
+        assert_eq!(message.matches(&both).count(), 3);
+    }
+
+    #[test]
+    fn the_telegram_message_closes_every_block() {
+        for message in telegram_messages() {
+            let count = |keyword: &str| {
+                template_actions(&message)
+                    .filter(|action| template_keyword(action) == keyword)
+                    .count()
+            };
+
+            assert_eq!(count("if") + count("range") + count("with"), count("end"));
+        }
     }
 
     #[test]

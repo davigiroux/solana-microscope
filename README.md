@@ -213,11 +213,13 @@ Transaction · Dashboard
 `Transaction` opens the matched transaction in the explorer. `Dashboard` opens
 the alert's panel in the Grafana dashboard; an alert with no dashboard panel,
 such as an instruction or health alert, links its `Rule` instead. A recovered
-health alert is one `✅ resolved: <signal>` line.
+health alert is one `✅ resolved: <signal>` line. When the deployment monitors
+several programs or several multisigs, a line under the description names the
+one that matched: `Program <program ID>` or `Vault <vault address>`.
 
 Telegram limits a message to 4096 characters, so one message shows at most
 five alerts and counts the rest, and cuts a description at 3000 characters when
-it holds one alert, or at 160 when it holds several. Link addresses are never
+it holds one alert, or at 100 when it holds several. Link addresses are never
 cut: the limits leave room for two links of 200 characters each, so a longer
 explorer URL or Grafana `root_url` reduces that margin.
 
