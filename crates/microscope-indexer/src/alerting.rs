@@ -1000,24 +1000,19 @@ fn condition_description(condition: &AlertCondition) -> anyhow::Result<String> {
     ))
 }
 
-/// Longest description, in characters, when the Telegram message holds one alert.
 const TELEGRAM_SINGLE_DESCRIPTION_LIMIT: usize = 3000;
 
-/// Longest description, in characters, of each alert when the Telegram message holds several.
 const TELEGRAM_GROUPED_DESCRIPTION_LIMIT: usize = 100;
 
-/// Go template for one alert in the Telegram message; `{limit}` and `{matched}` are filled in.
 const TELEGRAM_ALERT: &str = r#"{{ if eq .Labels.severity "critical" }}🚨{{ else if eq .Labels.severity "error" }}🔴{{ else if eq .Labels.severity "warning" }}🟠{{ else }}🔵{{ end }} <b>{{ if eq .Labels.alertname "DatasourceError" }}DatasourceError: {{ end }}{{ or .Labels.signal_name .Labels.alertname | html | printf "%.64s" }}</b>{{ with .Labels.severity }} · {{ . | html | printf "%.16s" }}{{ end }}
 {{ or .Annotations.Error .Annotations.description .Annotations.summary | html | printf "%.{limit}s" }}
 {matched}{{ if .Annotations.transaction_url }}<a href="{{ .Annotations.transaction_url | html }}">Transaction</a> · {{ end }}{{ if .PanelURL }}<a href="{{ .PanelURL | html }}">Dashboard</a>{{ else if .DashboardURL }}<a href="{{ .DashboardURL | html }}">Dashboard</a>{{ else if .GeneratorURL }}<a href="{{ .GeneratorURL | html }}">Rule</a>{{ end }}
 
 "#;
 
-/// Go template for one resolved alert in the Telegram message.
 const TELEGRAM_RESOLVED: &str =
     "✅ resolved: {{ or .Labels.signal_name .Labels.alertname | html | printf \"%.64s\" }}\n";
 
-/// Returns the Go template line that names the program or the vault an alert matched.
 fn telegram_matched_line(config: &Config) -> String {
     let named = [
         ("Program", "program_id", config.programs.len() > 1),
@@ -1036,14 +1031,12 @@ fn telegram_matched_line(config: &Config) -> String {
     line
 }
 
-/// Returns the Go template for one alert, with the description cut at `description_limit`.
 fn telegram_alert(description_limit: usize, matched_line: &str) -> String {
     TELEGRAM_ALERT
         .replace("{limit}", &description_limit.to_string())
         .replace("{matched}", matched_line)
 }
 
-/// Returns the Telegram message template: at most five firing alerts, then at most five resolved ones.
 fn telegram_message(config: &Config) -> String {
     let matched_line = telegram_matched_line(config);
     let single = telegram_alert(TELEGRAM_SINGLE_DESCRIPTION_LIMIT, &matched_line);
@@ -1761,8 +1754,6 @@ mod tests {
     fn rule_uids_stay_pinned_to_the_alert_identity() {
         let alert = alert(AlertKind::Event, "created");
         let rule = grafana_rule(&config(vec![]), &alert, Some(AlertChannel::Telegram)).unwrap();
-        // First 32 hex digits of the SHA-256 of
-        // "<program>\0event\0created\0all\0[]\0warning\0telegram".
         assert_eq!(rule["uid"], "ms-b0c36b31784b130c356feb6976226009");
     }
 
@@ -2088,7 +2079,6 @@ mod tests {
         config
     }
 
-    /// The message for one program and one multisig, and the one that names both.
     fn telegram_messages() -> [String; 2] {
         [
             telegram_message(&config(vec![])),
@@ -2123,6 +2113,9 @@ mod tests {
             );
             assert!(message.contains(".Annotations.transaction_url"));
             assert!(message.contains("{{ range .Alerts.Resolved }}✅ resolved: "));
+            assert!(message.contains(
+                "{{ if gt (len .Alerts.Resolved) 5 }}{{ range slice .Alerts.Resolved 0 5 }}✅ resolved: "
+            ));
         }
     }
 
@@ -2141,8 +2134,7 @@ mod tests {
         );
     }
 
-    /// Grafana expands `$NAME` in contact point settings, and operators
-    /// substitute the `$NAME` credentials in a Grafana Cloud export.
+    /// Grafana expands `$NAME` in contact point settings.
     #[test]
     fn the_telegram_message_survives_grafana_env_expansion() {
         for message in telegram_messages() {
@@ -2180,8 +2172,7 @@ mod tests {
     }
 
     /// Grafana cuts the message at 4096 characters wherever that falls, and
-    /// Telegram rejects a message cut inside a tag. A cut made after `html`
-    /// cannot split a tag, because the escaped text holds no `<`.
+    /// Telegram rejects a message cut inside a tag.
     #[test]
     fn the_telegram_message_bounds_every_text_it_prints() {
         for message in telegram_messages() {
@@ -2229,8 +2220,6 @@ mod tests {
         assert!(!message.contains(".Annotations.vault_address"));
     }
 
-    /// An alert covers every program or every vault, so only the message can
-    /// say which one a transaction touched.
     #[test]
     fn several_programs_or_multisigs_name_the_one_that_matched() {
         let program = "{{ if .Annotations.program_id }}Program {{ .Annotations.program_id | html | printf \"%.44s\" }}\n";
