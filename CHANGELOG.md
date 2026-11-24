@@ -20,7 +20,7 @@ version and the section heading below.
 - `alerting.own_policy_tree = true` groups health alerts on Slack and Telegram:
   the health rules that fire in one outage arrive as one message instead of
   one each. Alerts that fire later and recoveries come as follow-up messages
-  for the group, at most one every 5 minutes, so recoveries that happen apart
+  for the group, at most one a minute, so recoveries that happen apart
   still arrive apart. It is off by default, because it routes those alerts
   through Grafana's notification-policy tree, which is org-wide on Grafana
   Cloud: with it on, `<deployment>-routes.json` holds the health routes, and
@@ -34,6 +34,10 @@ version and the section heading below.
   each description instead of 100, with or without `own_policy_tree`. Event,
   instruction and multisig alerts keep 100. On Grafana Cloud, push the
   Telegram contact points again to get the longer descriptions.
+- A Telegram message with more than five health alerts lists all of them, one
+  line each with icon, signal and severity, instead of the first five, so a
+  critical alert is never left out. Event, instruction and multisig alerts
+  still show the first five and count the rest.
 
 ## [0.2.0-rc.1] - 2026-11-24
 

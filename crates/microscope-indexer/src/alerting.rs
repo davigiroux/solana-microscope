@@ -35,7 +35,7 @@ const YELLOWSTONE_GAP_WINDOW_SECONDS: u64 = 600;
 /// page on its own but a provider that refuses every connection does.
 const YELLOWSTONE_PROBE_WINDOW_SECONDS: u64 = 120;
 pub(crate) const RPC_POLL_FAILURE_WINDOW_SECONDS: u64 = 900;
-const HEALTH_GROUP_INTERVAL: &str = "5m";
+const HEALTH_GROUP_INTERVAL: &str = "1m";
 const HEALTH_REPEAT_INTERVAL: &str = "4h";
 
 pub fn generate(config: &Config, output_dir: &Path) -> anyhow::Result<PathBuf> {
@@ -166,8 +166,9 @@ fn provisioning_document(
         // The route Grafana derives from a rule's receiver always groups by
         // alert name, so the tree has to route these.
         for rule in health_rules.iter_mut() {
-            let grouped = grouped_health_channels(channels)
-                .any(|channel| rule["labels"]["channel"] == channel.as_str());
+            let grouped = rule["labels"]["signal_kind"] == "datasource"
+                && grouped_health_channels(channels)
+                    .any(|channel| rule["labels"]["channel"] == channel.as_str());
             if let Some(rule) = rule.as_object_mut().filter(|_| grouped) {
                 rule.remove("notification_settings");
             }
@@ -344,7 +345,7 @@ fn health_route(channel: AlertChannel) -> Value {
         // leaves a label the alert lacks out of the group.
         "group_by": ["deployment", "signal_kind"],
         // Set on the route, or a shared tree's root would decide them.
-        "group_wait": format!("{}s", 2 * RPC_HEALTH_EVALUATION_INTERVAL_SECONDS),
+        "group_wait": format!("{RPC_HEALTH_EVALUATION_INTERVAL_SECONDS}s"),
         "group_interval": HEALTH_GROUP_INTERVAL,
         "repeat_interval": HEALTH_REPEAT_INTERVAL,
         "continue": false,
@@ -1107,8 +1108,10 @@ const TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT: usize = 100;
 /// Health alerts print one link and no transaction or matched line, so five fit in 4096.
 const TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT: usize = 350;
 
-const TELEGRAM_ALERT: &str = r#"{{ if eq .Labels.severity "critical" }}🚨{{ else if eq .Labels.severity "error" }}🔴{{ else if eq .Labels.severity "warning" }}🟠{{ else }}🔵{{ end }} <b>{{ if eq .Labels.alertname "DatasourceError" }}DatasourceError: {{ end }}{{ or .Labels.signal_name .Labels.alertname | html | printf "%.64s" }}</b>{{ with .Labels.severity }} · {{ . | html | printf "%.16s" }}{{ end }}
-{{ or .Annotations.Error .Annotations.description .Annotations.summary | html | printf "%.{limit}s" }}
+/// An alert's first line, and all that a health alert prints when more than five fire.
+const TELEGRAM_ALERT_TITLE: &str = r#"{{ if eq .Labels.severity "critical" }}🚨{{ else if eq .Labels.severity "error" }}🔴{{ else if eq .Labels.severity "warning" }}🟠{{ else }}🔵{{ end }} <b>{{ if eq .Labels.alertname "DatasourceError" }}DatasourceError: {{ end }}{{ or .Labels.signal_name .Labels.alertname | html | printf "%.64s" }}</b>{{ with .Labels.severity }} · {{ . | html | printf "%.16s" }}{{ end }}"#;
+
+const TELEGRAM_ALERT_DETAILS: &str = r#"{{ or .Annotations.Error .Annotations.description .Annotations.summary | html | printf "%.{limit}s" }}
 {matched}{{ if .Annotations.transaction_url }}<a href="{{ .Annotations.transaction_url | html }}">Transaction</a> · {{ end }}{{ if .PanelURL }}<a href="{{ .PanelURL | html }}">Dashboard</a>{{ else if .DashboardURL }}<a href="{{ .DashboardURL | html }}">Dashboard</a>{{ else if .GeneratorURL }}<a href="{{ .GeneratorURL | html }}">Rule</a>{{ end }}
 
 "#;
@@ -1135,22 +1138,45 @@ fn telegram_matched_line(config: &Config) -> String {
 }
 
 fn telegram_alert(description_limit: usize, matched_line: &str) -> String {
-    TELEGRAM_ALERT
+    let details = TELEGRAM_ALERT_DETAILS
         .replace("{limit}", &description_limit.to_string())
-        .replace("{matched}", matched_line)
+        .replace("{matched}", matched_line);
+    format!("{TELEGRAM_ALERT_TITLE}\n{details}")
 }
 
-fn telegram_message(config: &Config, grouped_description_limit: usize) -> String {
+fn telegram_message(config: &Config, activity: bool) -> String {
     let matched_line = telegram_matched_line(config);
     let single = telegram_alert(TELEGRAM_SINGLE_DESCRIPTION_LIMIT, &matched_line);
-    let grouped = telegram_alert(grouped_description_limit, &matched_line);
+    let grouped = telegram_alert(
+        if activity {
+            TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT
+        } else {
+            TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT
+        },
+        &matched_line,
+    );
+    // A health alert is never hidden: above five, each one gets its title line.
+    let above_five = if activity {
+        [
+            "{{ range slice .Alerts.Firing 0 5 }}",
+            &grouped,
+            "{{ end }}… {{ len .Alerts.Firing }} alerts firing, first 5 shown\n",
+        ]
+        .concat()
+    } else {
+        [
+            "{{ range .Alerts.Firing }}",
+            TELEGRAM_ALERT_TITLE,
+            "\n{{ end }}",
+        ]
+        .concat()
+    };
     [
         "{{ if eq (len .Alerts.Firing) 1 }}{{ range .Alerts.Firing }}",
         &single,
         "{{ end }}",
-        "{{ else if gt (len .Alerts.Firing) 5 }}{{ range slice .Alerts.Firing 0 5 }}",
-        &grouped,
-        "{{ end }}… {{ len .Alerts.Firing }} alerts firing, first 5 shown\n",
+        "{{ else if gt (len .Alerts.Firing) 5 }}",
+        &above_five,
         "{{ else }}{{ range .Alerts.Firing }}",
         &grouped,
         "{{ end }}{{ end }}",
@@ -1185,14 +1211,7 @@ fn contact_point(
         AlertChannel::Telegram => json!({
             "bottoken": "$TELEGRAM_BOT_TOKEN",
             "chatid": "$TELEGRAM_CHAT_ID",
-            "message": telegram_message(
-                config,
-                if activity {
-                    TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT
-                } else {
-                    TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT
-                },
-            ),
+            "message": telegram_message(config, activity),
             "parse_mode": "HTML",
             "disable_web_page_preview": true,
         }),
@@ -1251,7 +1270,7 @@ mod tests {
     use super::{
         add_resource_deletions, contact_point_uids, deletion_uids, grafana_rule,
         log_stream_selector_for, logql_query, provisioning_document, rule_uids, telegram_message,
-        TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT, TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT,
+        RPC_HEALTH_EVALUATION_INTERVAL_SECONDS, TELEGRAM_ALERT_TITLE,
     };
 
     fn alert(kind: AlertKind, name: &str) -> AlertRule {
@@ -2169,12 +2188,19 @@ mod tests {
         assert_eq!(activity["type"], "telegram");
         let mut health_settings = telegram["settings"].clone();
         let health_message = health_settings["message"].as_str().unwrap();
+        let listing = [
+            "{{ range .Alerts.Firing }}",
+            TELEGRAM_ALERT_TITLE,
+            "\n{{ end }}",
+        ]
+        .concat();
         health_settings["message"] = health_message
+            .replace(&listing, &above_five_firing("microscope-telegram-activity"))
             .replace("printf \"%.350s\"", "printf \"%.100s\"")
             .into();
         assert_eq!(
             activity["settings"], health_settings,
-            "only the grouped description limit differs"
+            "only the grouped description limit and the list above five differ"
         );
     }
 
@@ -2366,13 +2392,9 @@ mod tests {
 
     fn telegram_messages() -> Vec<String> {
         let configs = [config(vec![]), several_programs_and_multisigs()];
-        let limits = [
-            TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT,
-            TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT,
-        ];
         configs
             .iter()
-            .flat_map(|config| limits.map(|limit| telegram_message(config, limit)))
+            .flat_map(|config| [false, true].map(|activity| telegram_message(config, activity)))
             .collect()
     }
 
@@ -2492,9 +2514,9 @@ mod tests {
         let description =
             |limit: usize| format!(".Annotations.summary | html | printf \"%.{limit}s\" }}}}");
 
-        for (name, grouped_limit) in [
-            ("microscope-telegram", 350),
-            ("microscope-telegram-activity", 100),
+        for (name, grouped_limit, grouped_branches) in [
+            ("microscope-telegram", 350, 1),
+            ("microscope-telegram-activity", 100, 2),
         ] {
             let settings = contact_point_settings(AlertChannel::Telegram, name);
             let message = settings["message"].as_str().unwrap();
@@ -2506,11 +2528,49 @@ mod tests {
             assert_eq!(single.matches(&description(3000)).count(), 1, "{name}");
             assert_eq!(
                 grouped.matches(&description(grouped_limit)).count(),
-                2,
+                grouped_branches,
                 "{name}"
             );
-            assert_eq!(message.matches(".Annotations.summary").count(), 3);
+            assert_eq!(
+                message.matches(".Annotations.summary").count(),
+                1 + grouped_branches
+            );
         }
+    }
+
+    fn above_five_firing(name: &str) -> String {
+        let settings = contact_point_settings(AlertChannel::Telegram, name);
+        let message = settings["message"].as_str().unwrap();
+        let (_, rest) = message
+            .split_once("{{ else if gt (len .Alerts.Firing) 5 }}")
+            .unwrap();
+        let (above_five, _) = rest
+            .split_once("{{ else }}{{ range .Alerts.Firing }}")
+            .unwrap();
+        above_five.to_owned()
+    }
+
+    #[test]
+    fn the_health_message_lists_every_firing_alert_above_five() {
+        let above_five = above_five_firing("microscope-telegram");
+
+        assert_eq!(
+            above_five,
+            format!("{{{{ range .Alerts.Firing }}}}{TELEGRAM_ALERT_TITLE}\n{{{{ end }}}}")
+        );
+        assert!(!above_five.contains("first 5 shown"));
+        assert!(!above_five.contains(".Annotations"));
+        assert!(!above_five.contains("URL"));
+    }
+
+    #[test]
+    fn the_activity_message_still_shows_the_first_five_firing_alerts() {
+        let above_five = above_five_firing("microscope-telegram-activity");
+
+        assert!(above_five.starts_with("{{ range slice .Alerts.Firing 0 5 }}"));
+        assert!(above_five
+            .ends_with("{{ end }}… {{ len .Alerts.Firing }} alerts firing, first 5 shown\n"));
+        assert!(above_five.contains(".Annotations.description"));
     }
 
     /// The health contact point's longer grouped description fits in 4096
@@ -2546,8 +2606,7 @@ mod tests {
 
     #[test]
     fn one_program_and_one_multisig_keep_the_three_line_message() {
-        let message =
-            telegram_message(&config(vec![]), TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT);
+        let message = telegram_message(&config(vec![]), true);
 
         assert!(!message.contains(".Annotations.program_id"));
         assert!(!message.contains(".Annotations.vault_address"));
@@ -2563,24 +2622,15 @@ mod tests {
         };
         let end = "{{ end }}{{ if .Annotations.transaction_url }}";
 
-        let message = telegram_message(
-            &several_programs(),
-            TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT,
-        );
+        let message = telegram_message(&several_programs(), true);
         assert_eq!(message.matches(&format!("{program}{end}")).count(), 3);
         assert!(!message.contains(".Annotations.vault_address"));
 
-        let message = telegram_message(
-            &several_multisigs(),
-            TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT,
-        );
+        let message = telegram_message(&several_multisigs(), true);
         assert_eq!(message.matches(&format!("{}{end}", vault("if"))).count(), 3);
         assert!(!message.contains(".Annotations.program_id"));
 
-        let message = telegram_message(
-            &several_programs_and_multisigs(),
-            TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT,
-        );
+        let message = telegram_message(&several_programs_and_multisigs(), true);
         let both = format!("{program}{}{end}", vault("else if"));
         assert_eq!(message.matches(&both).count(), 3);
     }
@@ -2713,8 +2763,8 @@ mod tests {
                 "receiver": format!("microscope-{channel}"),
                 "object_matchers": [["channel", "=", channel], ["signal_kind", "=", "datasource"]],
                 "group_by": ["deployment", "signal_kind"],
-                "group_wait": "60s",
-                "group_interval": "5m",
+                "group_wait": "30s",
+                "group_interval": "1m",
                 "repeat_interval": "4h",
                 "continue": false,
             })
@@ -2774,6 +2824,32 @@ mod tests {
             );
         }
         assert!(grouped > 0);
+    }
+
+    #[test]
+    fn own_policy_tree_keeps_the_activity_receiver_of_an_alert_in_the_health_interval() {
+        let alerts = alerts_on_every_channel()
+            .into_iter()
+            .map(|mut alert| {
+                alert.evaluation_interval_seconds = Some(RPC_HEALTH_EVALUATION_INTERVAL_SECONDS);
+                alert
+            })
+            .collect();
+        let document =
+            provisioning_document(&own_policy_tree(alerts), &every_channel(), true).unwrap();
+
+        let mut checked = 0;
+        for rule in rules(&document).filter(|rule| rule["labels"]["signal_kind"] == "event") {
+            let channel = rule["labels"]["channel"].as_str().unwrap();
+            if ["slack", "telegram"].contains(&channel) {
+                assert_eq!(
+                    rule["notification_settings"]["receiver"],
+                    format!("microscope-{channel}-activity"),
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 2);
     }
 
     #[test]

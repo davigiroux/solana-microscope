@@ -242,13 +242,15 @@ health alert is one `✅ resolved: <signal>` line. When the deployment monitors
 several programs or several multisigs, a line under the description names the
 one that matched: `Program <program ID>` or `Vault <vault address>`.
 
-Telegram limits a message to 4096 characters, so one message shows at most
-five alerts and counts the rest, and cuts a description at 3000 characters when
-it holds one alert. When it holds several, it cuts each description at 350
-characters for health alerts, or at 100 for event, instruction and multisig
-alerts. Link addresses are never cut: the limits leave room for 200-character
-links (two per alert, one per health alert), so a longer explorer URL or
-Grafana `root_url` reduces that margin.
+Telegram limits a message to 4096 characters, so a message of event,
+instruction and multisig alerts shows at most five and counts the rest. A
+message of more than five health alerts lists every one of them on one line:
+icon, signal and severity, without description or link. A message cuts a
+description at 3000 characters when it holds one alert. When it holds several,
+it cuts each description at 350 characters for health alerts, or at 100 for
+event, instruction and multisig alerts. Link addresses are never cut: the
+limits leave room for 200-character links (two per alert, one per health
+alert), so a longer explorer URL or Grafana `root_url` reduces that margin.
 
 The Grafana links start with Grafana's `root_url`, which is
 `http://localhost:3000/` in the local stack, and Telegram shows a `localhost`
@@ -259,14 +261,14 @@ Event, instruction and multisig alerts carry the explorer link alone in a
 `transaction_url` annotation, for notification templates of your own. The
 `transaction` annotation still holds the signature followed by that link.
 
-Each health alert sends its own message, so an outage that trips several
-health rules sends several, and as many again when they recover. Set
+Each health alert sends its own message, so an outage that trips several health
+rules sends several, and as many again when they recover. Set
 `own_policy_tree = true` under `[alerting]` to group them on Slack and
-Telegram: health alerts that fire within 60 seconds of the first one arrive as
-one message. An alert that fires later, and each recovery, comes in a
-follow-up message for the group, at most one every 5 minutes, so recoveries
-that happen apart still arrive apart. A follow-up can list an alert that
-already recovered a second time, because Grafana keeps sending a resolved
+Telegram: health alerts that fire within 30 seconds (one health evaluation) of
+the first one arrive as one message. An alert that fires later, and each
+recovery, comes in a follow-up message for the group, at most one a minute, so
+recoveries that happen apart still arrive apart. A follow-up can list an alert
+that already recovered a second time, because Grafana keeps sending a resolved
 alert to Alertmanager for some minutes. PagerDuty keeps one incident per
 health alert.
 

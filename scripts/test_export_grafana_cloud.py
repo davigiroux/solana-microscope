@@ -21,11 +21,13 @@ def scope(expr, deployment="mainnet"):
 
 
 def export_routes(routes, deployment="mainnet"):
-    program = re.search(
+    match = re.search(
         r"""^jq --arg deployment "\$DEPLOYMENT" '([^']*)' "\$document" >"notification-policies/\$DEPLOYMENT-routes\.json"$""",
         SCRIPT.read_text(),
         re.M,
-    ).group(1)
+    )
+    assert match, "export-grafana-cloud.sh: routes jq line not found"
+    program = match.group(1)
     proc = subprocess.run(
         ["jq", "--arg", "deployment", deployment, program],
         input=json.dumps({"policies": [{"routes": routes}]}),
@@ -37,7 +39,9 @@ def export_routes(routes, deployment="mainnet"):
 
 
 def prints_merge_reminder(exported_routes):
-    condition = re.search(r"^if jq --exit-status '([^']*)' \\$", SCRIPT.read_text(), re.M).group(1)
+    match = re.search(r"^if jq --exit-status '([^']*)' \\$", SCRIPT.read_text(), re.M)
+    assert match, "export-grafana-cloud.sh: merge reminder jq condition not found"
+    condition = match.group(1)
     proc = subprocess.run(
         ["jq", "--exit-status", condition],
         input=json.dumps(exported_routes),
