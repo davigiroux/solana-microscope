@@ -35,8 +35,6 @@ const YELLOWSTONE_GAP_WINDOW_SECONDS: u64 = 600;
 /// page on its own but a provider that refuses every connection does.
 const YELLOWSTONE_PROBE_WINDOW_SECONDS: u64 = 120;
 pub(crate) const RPC_POLL_FAILURE_WINDOW_SECONDS: u64 = 900;
-/// Two evaluations of the health group, so rules failing together share a message.
-const HEALTH_GROUP_WAIT: &str = "60s";
 const HEALTH_GROUP_INTERVAL: &str = "5m";
 const HEALTH_REPEAT_INTERVAL: &str = "4h";
 
@@ -346,7 +344,7 @@ fn health_route(channel: AlertChannel) -> Value {
         // leaves a label the alert lacks out of the group.
         "group_by": ["deployment", "signal_kind"],
         // Set on the route, or a shared tree's root would decide them.
-        "group_wait": HEALTH_GROUP_WAIT,
+        "group_wait": format!("{}s", 2 * RPC_HEALTH_EVALUATION_INTERVAL_SECONDS),
         "group_interval": HEALTH_GROUP_INTERVAL,
         "repeat_interval": HEALTH_REPEAT_INTERVAL,
         "continue": false,
@@ -1106,9 +1104,7 @@ const TELEGRAM_SINGLE_DESCRIPTION_LIMIT: usize = 3000;
 
 const TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT: usize = 100;
 
-/// Health alerts print no transaction or matched line, only one link. Five of
-/// them, five resolved lines and both counts take at most 5 × 350 + 2142 =
-/// 3892 characters with 200-character links.
+/// Health alerts print one link and no transaction or matched line, so five fit in 4096.
 const TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT: usize = 350;
 
 const TELEGRAM_ALERT: &str = r#"{{ if eq .Labels.severity "critical" }}🚨{{ else if eq .Labels.severity "error" }}🔴{{ else if eq .Labels.severity "warning" }}🟠{{ else }}🔵{{ end }} <b>{{ if eq .Labels.alertname "DatasourceError" }}DatasourceError: {{ end }}{{ or .Labels.signal_name .Labels.alertname | html | printf "%.64s" }}</b>{{ with .Labels.severity }} · {{ . | html | printf "%.16s" }}{{ end }}

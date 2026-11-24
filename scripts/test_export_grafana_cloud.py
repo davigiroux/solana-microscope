@@ -36,7 +36,18 @@ def export_routes(routes, deployment="mainnet"):
     return json.loads(proc.stdout)
 
 
-# The routes as alerting.rs emits them.
+def prints_merge_reminder(exported_routes):
+    condition = re.search(r"^if jq --exit-status '([^']*)' \\$", SCRIPT.read_text(), re.M).group(1)
+    proc = subprocess.run(
+        ["jq", "--exit-status", condition],
+        input=json.dumps(exported_routes),
+        capture_output=True,
+        text=True,
+    )
+    return proc.returncode == 0
+
+
+# Same routes as own_policy_tree_adds_a_grouped_health_route_for_slack_and_telegram expects.
 MUTE_ROUTE = {
     "receiver": "microscope-noop",
     "object_matchers": [["channel", "=", "none"]],
@@ -113,6 +124,13 @@ class Routes(unittest.TestCase):
                 ],
             },
         ])
+
+    def test_reminds_to_merge_the_routes_only_when_they_hold_a_health_route(self):
+        self.assertFalse(prints_merge_reminder(export_routes([MUTE_ROUTE])))
+        self.assertTrue(prints_merge_reminder(export_routes([
+            MUTE_ROUTE,
+            health_route("telegram", "microscope-telegram"),
+        ])))
 
 
 if __name__ == "__main__":
