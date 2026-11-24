@@ -1104,7 +1104,12 @@ fn condition_description(condition: &AlertCondition) -> anyhow::Result<String> {
 
 const TELEGRAM_SINGLE_DESCRIPTION_LIMIT: usize = 3000;
 
-const TELEGRAM_GROUPED_DESCRIPTION_LIMIT: usize = 100;
+const TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT: usize = 100;
+
+/// Health alerts print no transaction or matched line, only one link. Five of
+/// them, five resolved lines and both counts take at most 5 × 350 + 2142 =
+/// 3892 characters with 200-character links.
+const TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT: usize = 350;
 
 const TELEGRAM_ALERT: &str = r#"{{ if eq .Labels.severity "critical" }}🚨{{ else if eq .Labels.severity "error" }}🔴{{ else if eq .Labels.severity "warning" }}🟠{{ else }}🔵{{ end }} <b>{{ if eq .Labels.alertname "DatasourceError" }}DatasourceError: {{ end }}{{ or .Labels.signal_name .Labels.alertname | html | printf "%.64s" }}</b>{{ with .Labels.severity }} · {{ . | html | printf "%.16s" }}{{ end }}
 {{ or .Annotations.Error .Annotations.description .Annotations.summary | html | printf "%.{limit}s" }}
@@ -1139,10 +1144,10 @@ fn telegram_alert(description_limit: usize, matched_line: &str) -> String {
         .replace("{matched}", matched_line)
 }
 
-fn telegram_message(config: &Config) -> String {
+fn telegram_message(config: &Config, grouped_description_limit: usize) -> String {
     let matched_line = telegram_matched_line(config);
     let single = telegram_alert(TELEGRAM_SINGLE_DESCRIPTION_LIMIT, &matched_line);
-    let grouped = telegram_alert(TELEGRAM_GROUPED_DESCRIPTION_LIMIT, &matched_line);
+    let grouped = telegram_alert(grouped_description_limit, &matched_line);
     [
         "{{ if eq (len .Alerts.Firing) 1 }}{{ range .Alerts.Firing }}",
         &single,
@@ -1184,7 +1189,14 @@ fn contact_point(
         AlertChannel::Telegram => json!({
             "bottoken": "$TELEGRAM_BOT_TOKEN",
             "chatid": "$TELEGRAM_CHAT_ID",
-            "message": telegram_message(config),
+            "message": telegram_message(
+                config,
+                if activity {
+                    TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT
+                } else {
+                    TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT
+                },
+            ),
             "parse_mode": "HTML",
             "disable_web_page_preview": true,
         }),
@@ -1243,6 +1255,7 @@ mod tests {
     use super::{
         add_resource_deletions, contact_point_uids, deletion_uids, grafana_rule,
         log_stream_selector_for, logql_query, provisioning_document, rule_uids, telegram_message,
+        TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT, TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT,
     };
 
     fn alert(kind: AlertKind, name: &str) -> AlertRule {
@@ -2158,7 +2171,15 @@ mod tests {
         let activity = receiver("microscope-telegram-activity");
         assert_eq!(activity["uid"], "microscope-telegram-activity");
         assert_eq!(activity["type"], "telegram");
-        assert_eq!(activity["settings"], telegram["settings"]);
+        let mut health_settings = telegram["settings"].clone();
+        let health_message = health_settings["message"].as_str().unwrap();
+        health_settings["message"] = health_message
+            .replace("printf \"%.350s\"", "printf \"%.100s\"")
+            .into();
+        assert_eq!(
+            activity["settings"], health_settings,
+            "only the grouped description limit differs"
+        );
     }
 
     fn mentioning(mut alert: AlertRule, mention: &str) -> AlertRule {
@@ -2347,11 +2368,16 @@ mod tests {
         config
     }
 
-    fn telegram_messages() -> [String; 2] {
-        [
-            telegram_message(&config(vec![])),
-            telegram_message(&several_programs_and_multisigs()),
-        ]
+    fn telegram_messages() -> Vec<String> {
+        let configs = [config(vec![]), several_programs_and_multisigs()];
+        let limits = [
+            TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT,
+            TELEGRAM_GROUPED_HEALTH_DESCRIPTION_LIMIT,
+        ];
+        configs
+            .iter()
+            .flat_map(|config| limits.map(|limit| telegram_message(config, limit)))
+            .collect()
     }
 
     fn template_actions(message: &str) -> impl Iterator<Item = &str> {
@@ -2466,23 +2492,66 @@ mod tests {
     }
 
     #[test]
-    fn a_single_alert_keeps_a_longer_description_than_grouped_alerts() {
-        let message = telegram_message(&config(vec![]));
-        let (single, grouped) = message
-            .split_once("{{ else if gt (len .Alerts.Firing) 5 }}")
-            .unwrap();
+    fn grouped_health_alerts_keep_a_longer_description_than_grouped_activity_alerts() {
         let description =
             |limit: usize| format!(".Annotations.summary | html | printf \"%.{limit}s\" }}}}");
 
-        assert!(single.starts_with("{{ if eq (len .Alerts.Firing) 1 }}"));
-        assert_eq!(single.matches(&description(3000)).count(), 1);
-        assert_eq!(grouped.matches(&description(100)).count(), 2);
-        assert_eq!(message.matches(".Annotations.summary").count(), 3);
+        for (name, grouped_limit) in [
+            ("microscope-telegram", 350),
+            ("microscope-telegram-activity", 100),
+        ] {
+            let settings = contact_point_settings(AlertChannel::Telegram, name);
+            let message = settings["message"].as_str().unwrap();
+            let (single, grouped) = message
+                .split_once("{{ else if gt (len .Alerts.Firing) 5 }}")
+                .unwrap();
+
+            assert!(single.starts_with("{{ if eq (len .Alerts.Firing) 1 }}"));
+            assert_eq!(single.matches(&description(3000)).count(), 1, "{name}");
+            assert_eq!(
+                grouped.matches(&description(grouped_limit)).count(),
+                2,
+                "{name}"
+            );
+            assert_eq!(message.matches(".Annotations.summary").count(), 3);
+        }
+    }
+
+    /// The health contact point's longer grouped description fits in 4096
+    /// characters only while health alerts print one link and nothing else.
+    #[test]
+    fn health_alerts_carry_no_annotation_the_message_prints_beyond_the_description() {
+        let document = provisioning_document(
+            &several_programs_and_multisigs(),
+            &BTreeSet::from([AlertChannel::Telegram]),
+            true,
+        )
+        .unwrap();
+
+        let health = rules(&document)
+            .filter(|rule| rule["labels"]["signal_kind"] == "datasource")
+            .collect::<Vec<_>>();
+        assert!(!health.is_empty());
+        for rule in health {
+            let annotations = rule["annotations"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>();
+            assert_eq!(
+                annotations,
+                BTreeSet::from(["description", "summary"]),
+                "{}",
+                rule["uid"]
+            );
+        }
     }
 
     #[test]
     fn one_program_and_one_multisig_keep_the_three_line_message() {
-        let message = telegram_message(&config(vec![]));
+        let message =
+            telegram_message(&config(vec![]), TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT);
 
         assert!(!message.contains(".Annotations.program_id"));
         assert!(!message.contains(".Annotations.vault_address"));
@@ -2498,15 +2567,24 @@ mod tests {
         };
         let end = "{{ end }}{{ if .Annotations.transaction_url }}";
 
-        let message = telegram_message(&several_programs());
+        let message = telegram_message(
+            &several_programs(),
+            TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT,
+        );
         assert_eq!(message.matches(&format!("{program}{end}")).count(), 3);
         assert!(!message.contains(".Annotations.vault_address"));
 
-        let message = telegram_message(&several_multisigs());
+        let message = telegram_message(
+            &several_multisigs(),
+            TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT,
+        );
         assert_eq!(message.matches(&format!("{}{end}", vault("if"))).count(), 3);
         assert!(!message.contains(".Annotations.program_id"));
 
-        let message = telegram_message(&several_programs_and_multisigs());
+        let message = telegram_message(
+            &several_programs_and_multisigs(),
+            TELEGRAM_GROUPED_ACTIVITY_DESCRIPTION_LIMIT,
+        );
         let both = format!("{program}{}{end}", vault("else if"));
         assert_eq!(message.matches(&both).count(), 3);
     }

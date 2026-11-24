@@ -244,9 +244,11 @@ one that matched: `Program <program ID>` or `Vault <vault address>`.
 
 Telegram limits a message to 4096 characters, so one message shows at most
 five alerts and counts the rest, and cuts a description at 3000 characters when
-it holds one alert, or at 100 when it holds several. Link addresses are never
-cut: the limits leave room for two links of 200 characters each, so a longer
-explorer URL or Grafana `root_url` reduces that margin.
+it holds one alert. When it holds several, it cuts each description at 350
+characters for health alerts, or at 100 for event, instruction and multisig
+alerts. Link addresses are never cut: the limits leave room for 200-character
+links (two per alert, one per health alert), so a longer explorer URL or
+Grafana `root_url` reduces that margin.
 
 The Grafana links start with Grafana's `root_url`, which is
 `http://localhost:3000/` in the local stack, and Telegram shows a `localhost`

@@ -28,6 +28,13 @@ version and the section heading below.
   and activity alerts are unchanged. In Terraform, set
   `alerting.own_policy_tree`.
 
+### Changed
+
+- A Telegram message that holds several health alerts keeps 350 characters of
+  each description instead of 100, with or without `own_policy_tree`. Event,
+  instruction and multisig alerts keep 100. On Grafana Cloud, push the
+  Telegram contact points again to get the longer descriptions.
+
 ## [0.2.0-rc.1] - 2026-11-24
 
 ### Added
