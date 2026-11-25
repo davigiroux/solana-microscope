@@ -55,6 +55,9 @@ multisig_unmatched_window_seconds = ${alerting.multisig_unmatched_window_seconds
 %{ if alerting.health_slack_mention != null ~}
 health_slack_mention = ${jsonencode(alerting.health_slack_mention)}
 %{ endif ~}
+%{ if alerting.own_policy_tree != null ~}
+own_policy_tree = ${alerting.own_policy_tree}
+%{ endif ~}
 %{ for alert in alerts ~}
 
 [[alerts]]

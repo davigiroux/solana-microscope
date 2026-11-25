@@ -17,6 +17,8 @@ Only a deployment meeting every condition at once has all of them, and Grafana s
 grep -oE '^[A-Z_]+=.' .env | cut -d= -f1
 ```
 
+With `alerting.own_policy_tree = true`, Slack and Telegram get one notification for all the health alerts firing together, so a single message can list several signals, and a follow-up message repeats the ones still firing next to the ones that recovered. Read each signal in it against the precedence list below; they are rarely independent faults.
+
 Every health rule pends before it pages, so a brief fault never notifies at all and a notification timestamp is the end of the pending period, not the start of the fault. Read the onset from the metrics, and read the pending period off the rule in Grafana if the delay matters.
 
 The definitions and their thresholds live in `crates/microscope-indexer/src/alerting.rs`. Each rule carries a `description` annotation that already explains its cause; quote it rather than reinventing an explanation, and use this file for the relationships between alerts, which the annotations cannot express.

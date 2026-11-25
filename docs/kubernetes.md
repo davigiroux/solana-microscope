@@ -199,6 +199,10 @@ Grafana: a `ConfigMap` the Grafana sidecar picks up, a file provisioning mount,
 or the Grafana API. Grafana reads alert provisioning only at startup, so a
 file-based route needs Grafana restarted after the files change.
 
+The generated file sets the notification-policy tree of that Grafana, with or
+without `alerting.own_policy_tree`; the option only adds the routes that group
+health alerts.
+
 The emitted contact points hold placeholders such as `$SLACK_WEBHOOK_URL`, not
 values. Grafana expands them from its own environment when it loads the
 provisioning files, so the credentials the config selects

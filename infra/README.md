@@ -149,6 +149,9 @@ alerting = {
   multisig_unmatched_window_seconds  = 3600
   # Tag the whole channel on health alerts sent to Slack.
   health_slack_mention = "@here"
+  # Slack and Telegram get one message for the health alerts of one outage.
+  # Has no effect in grafana_cloud mode, where the VM generates no provisioning.
+  own_policy_tree                    = false
 }
 
 alerts = [

@@ -273,6 +273,8 @@ pub struct AlertingConfig {
     /// instructions.
     pub multisig_unmatched_window_seconds: u64,
     pub health_slack_mention: Option<SlackMention>,
+    /// Opt-in, because Grafana Cloud's notification-policy tree belongs to the whole org.
+    pub own_policy_tree: bool,
 }
 
 impl Default for AlertingConfig {
@@ -285,6 +287,7 @@ impl Default for AlertingConfig {
             health_pending_period_seconds: 300,
             multisig_unmatched_window_seconds: 3600,
             health_slack_mention: None,
+            own_policy_tree: false,
         }
     }
 }
@@ -1632,6 +1635,15 @@ evaluation_interval_seconds = 30"#,
         .unwrap();
         assert_eq!(rule.lookback_window_seconds(&defaults), 300);
         assert_eq!(rule.evaluation_interval_seconds(&defaults), 30);
+    }
+
+    #[test]
+    fn leaves_the_policy_tree_alone_unless_asked() {
+        let defaults: AlertingConfig = toml::from_str("").unwrap();
+        assert!(!defaults.own_policy_tree);
+
+        let opted_in: AlertingConfig = toml::from_str("own_policy_tree = true").unwrap();
+        assert!(opted_in.own_policy_tree);
     }
 
     #[test]

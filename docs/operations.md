@@ -154,7 +154,9 @@ rule's, but the rule never ran. The `Error` annotation carries Grafana's
 reason, such as a `500` or `429` from its query service or a timeout reaching
 Prometheus or Loki. On Telegram the message is titled
 `DatasourceError: <signal_name>` and shows that reason in place of the rule's
-description.
+description. With `alerting.own_policy_tree = true` the same Slack or Telegram
+message can also list health alerts that are firing; each alert in it has its
+own title line.
 
 Check where the query failed, then confirm the indexer directly:
 
