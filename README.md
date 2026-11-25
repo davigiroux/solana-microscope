@@ -282,6 +282,10 @@ description, cut at 300 characters; in a message of several alerts, the fields
 take the place of the description, in the same 100 characters.
 The fields are set as code, so Telegram does not turn a path such as
 `data.group`, or a value, into a link.
+When one transaction sends more than five alerts, Telegram lists the first
+five and the count; Slack lists them all. In a message of several alerts, the
+fields are cut at 100 characters in the order `label_fields` gives them, so put
+first the field that tells the alerts apart.
 
 Telegram limits a message to 4096 characters, so a message of event,
 instruction and multisig alerts shows at most five and counts the rest. A
